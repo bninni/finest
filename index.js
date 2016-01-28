@@ -1,5 +1,11 @@
 /*
 Copyright Brian Ninni 2016
+
+Todo:
+	Rename String Escape to more generic term
+	Avoid escaped open/close characters should be an option disabled by default
+	Should Regex symbols (/ and /) act as default 'string escape' chars?
+
 */
 //common string symbols
 var defaultStringChars = [
