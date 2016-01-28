@@ -2,10 +2,14 @@
 Copyright Brian Ninni 2016
 
 Todo:
+
+Add endIndex
+
+	Tests, Readme
 	Rename String Escape to more generic term
 	Avoid escaped open/close characters should be an option disabled by default
 	Should Regex symbols (/ and /) act as default 'string escape' chars?
-
+	Open/close/escape chars can be regex or array of strings?
 */
 //common string symbols
 var defaultStringChars = [
@@ -47,8 +51,11 @@ function Extractor( open, close, stringChars ){
 	stringChars = buildStringObj(stringChars);
 	regex = buildRegex( open, close, stringChars.open );
 	
-	this.extract = function( str ){
-		return new Extraction( open, close, stringChars, regex ).init( str );
+	this.extract = function( str, count ){
+	
+		if (typeof count !== "number") count = 0;
+	
+		return new Extraction( open, close, stringChars, regex ).init( str, count );
 	}
 	
 }
@@ -66,10 +73,18 @@ function Extraction( open, close, stringChars, regex ){
 	this.sameChar = open === close;
 }
 
-Extraction.prototype.init = function( str ){
-	var arr = str.split( this.regex );
+Extraction.prototype.init = function( str, count ){
+	var arr = str.split( this.regex ),
+		l = arr.length,
+		i;
 		
-	arr.forEach(this.handleStr, this);
+	this.count = count;
+	this.index = 0;
+	
+	for(i=0;i<l;i++){
+		if( this.handleStr( arr[i] ) ) break;
+		this.index += arr[i].length;
+	}
 	
 	//if there is still a result, then there was an error
 	if( this.result ){
@@ -97,15 +112,18 @@ Extraction.prototype.handleStr = function( str ){
 		this.escaped = true;
 		this.unescapeStr = this.stringChars.close[index];
 	}
-	this.add( str );
+	return this.add( str );
 }
 
 Extraction.prototype.open = function(){
 	//create a new result object
-	var obj = {
+	var self = this;
+		obj = {
 			nest : [],
+			simple : [],
 			hasNest : false,
-			str : ''
+			str : '',
+			index : [ this.index ]
 		};
 	
 	//if there currently is a result:
@@ -120,17 +138,27 @@ Extraction.prototype.open = function(){
 		//add the new result object to the current nest
 		this.result.nest.push( obj );
 		
-		//add the open char to the string
-		this.result.str += this.openChar;
+		//add the new simple result object to the current simple
+		this.result.simple.push( obj.simple );
 		
 		//add the result to the tree
 		this.tree.push( this.result );
+		
+		this.tree.forEach(function( branch, i ){
+			//get the index of this for each parent
+			obj.index.push( self.index - branch.index[0] - 1 )
+				
+			//add the open char to all strings
+			branch.str += self.openChar;
+		});
 	}
 	//otherwise, save the obj as a new match
 	else this.matches.push( obj );
 	
 	//set the result to be the new object
 	this.result = obj;
+	
+	return false;
 }
 
 //to add text to the current result if there is one
@@ -141,9 +169,15 @@ Extraction.prototype.add = function( str ){
 		nest = this.result.nest;
 		
 		//if the last element is a string, then append
-		if( typeof nest[ nest.length-1 ] === "string" ) nest[ nest.length-1 ] += str;
+		if( typeof nest[ nest.length-1 ] === "string" ){
+			nest[ nest.length-1 ] += str;
+			this.result.simple += str;
+		}
 		//otherwise, the new string
-		else nest.push( str );
+		else{
+			nest.push( str );
+			this.result.simple.push( str );
+		}
 		
 		this.result.str += str;
 		
@@ -151,13 +185,24 @@ Extraction.prototype.add = function( str ){
 			obj.str += str;
 		})
 	}
+	
+	return false;
 }
 
-Extraction.prototype.close = function(){	
+Extraction.prototype.close = function(){
+
+	var self = this;
+		
+	this.tree.forEach(function( branch, i ){
+		//add the close char to all strings
+		branch.str += self.closeChar;
+	});
+
 	//set the result to be the last element in the tree
 	this.result = popLast( this.tree );
 	
-	if( this.result ) this.result.str += this.closeChar;
+	//return true if it reached the desired number of matches
+	return (this.result && this.matches.length === this.count);
 }
 
 //to sort an array by length
