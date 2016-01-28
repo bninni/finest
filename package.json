@@ -1,6 +1,6 @@
 {
   "name": "extract-brackets",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Extract nested brackets from strings",
   "main": "index.js",
   "scripts": {

@@ -1,19 +1,50 @@
+#extract-brackets
+
 To extract nested brackets from strings.  
 
 It will detect all brackets inside the string, and return the data from each bracket in a nested format.
 
 For example:
 
-Parsing: `'outer( inner )'` will return `' inner '`
+Parsing:
+```javascript
+'outer( inner )'
+```
+will return
+```javascript
+' inner '
+```
 
-parsing: `'outer( inner( innest ) )'` will return: `' inner( innest ) '` and `' innest '`
+And parsing:
+```javascript
+'outer( inner( innest ) )'
+```
+will return:
+```javascript
+' inner( innest ) ' and ' innest '
+```
 
 
-It works with escaped characters and characters that exist inside strings:
+It also works with escaped characters and characters that exist inside strings:
 
-Parsing: `'outer( inner( innest )" )'`  will return `' "inner( innest )" '`
 
-Parsing: `'outer( inner\( innest ) )'`  will return `' "inner\( innest )" '`
+Parsing:
+```javascript
+'outer( "inner( innest )" )'
+```
+will return
+```javascript
+' "inner( innest )" '
+```
+
+and parsing:
+```javascript
+'outer( inner\( innest ) )'
+```
+will return
+```javascript
+' "inner\( innest )" '
+```
 
 To use:
 
