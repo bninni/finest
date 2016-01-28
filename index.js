@@ -1,3 +1,6 @@
+/*
+Copyright Brian Ninni 2016
+*/
 //common string symbols
 var defaultStringChars = [
 		'"',

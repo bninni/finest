@@ -1,0 +1,35 @@
+{
+  "name": "extract-brackets",
+  "version": "0.0.1",
+  "description": "Extract nested brackets from strings",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bninni/extract-brackets.git"
+  },
+  "keywords": [
+    "extract",
+    "brackets",
+    "extract",
+    "parenthesis",
+    "extract",
+    "nested",
+    "brackets",
+    "extract",
+    "nested",
+    "parenthesis",
+    "from",
+    "string",
+    "from",
+    "strings"
+  ],
+  "author": "Brian Ninni <brian@ninni.io> (http://ninni.io)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/bninni/extract-brackets/issues"
+  },
+  "homepage": "https://github.com/bninni/extract-brackets#readme"
+}
