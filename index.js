@@ -77,7 +77,6 @@ Extraction.prototype.init = function( str, count ){
 	var arr = str.split( this.regex ),
 		l = arr.length,
 		i;
-		
 	this.count = count;
 	this.index = 0;
 	
@@ -97,7 +96,7 @@ Extraction.prototype.init = function( str, count ){
 
 Extraction.prototype.handleStr = function( str ){
 	var index;
-
+	
 	if( this.escaped ){
 		if( str === this.unescapeStr ) this.escaped = false;
 		return this.add( str );
@@ -192,7 +191,7 @@ Extraction.prototype.add = function( str ){
 Extraction.prototype.close = function(){
 
 	var self = this;
-		
+	
 	this.tree.forEach(function( branch, i ){
 		//add the close char to all strings
 		branch.str += self.closeChar;
@@ -202,7 +201,7 @@ Extraction.prototype.close = function(){
 	this.result = popLast( this.tree );
 	
 	//return true if it reached the desired number of matches
-	return (this.result && this.matches.length === this.count);
+	return ( !this.result && this.matches.length === this.count);
 }
 
 //to sort an array by length
