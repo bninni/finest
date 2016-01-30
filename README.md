@@ -72,7 +72,7 @@ var ExtractParens = new Extractor( '(' );
 
 //the 'close' char defaults to ')'
 
-ExtractParents.extract('outer( inner( innest ) )')
+ExtractParens.extract('outer( inner( innest ) )')
 ```
 
 will return:
