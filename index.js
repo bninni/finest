@@ -6,51 +6,35 @@ Rename to finest
 Todo:
 
 	Tests, Readme, Comments
-
-	Options:
-		-ignore escaped open\close symbols (default = false)
-		-capture brackets escape chars/regexes (default : '\\')
-			-escape inside capture brackets (default : false )
-			-escape outside capture brackets (default : false )
-		-escape brackets escape char/regexe (default : '\\')
-			-escape inside escape brackets (default : true )
-			-escape outside escape brackets (default : false )
-		-throw error or not	 (or function to pass error through to??)
-		-Error when encounter unmatched 'close' tag??
-		-option to catch prefix of open matches?
-			-option of prefix delimiter
-			-also, only match when there is no prefix
-		-option to catch suffix of close matches?
-			-option of suffix delimiter
-			-also, only match when there is no suffix
+	
+	Why does x.extract('hi(the\\"(guy)\\")') fail?
+	
+	Make sure all custom regex does not include capture groups
+	
+	Use the Brackets object instead of current method
+		-create its own openRegex and closeRegex (both with and without the escape function)
+		-dont use delim or prefix.  If people want to catch specific prefixes, they can assign it to the open bracket
+			-still place 'before' and 'after' nest properties?
+	Then simply: new Extractor( [CaptureBrackets], [EscapeBrackets], errorFunction );
+	
+	Throw Error when encounter unmatched 'close' tag??
 	
 	For Escape:
-		-can be str, regex, or array of each
-		-different open and close escapes
-		-the allOpen and allClose regex should contain the escape char
-			-but the individiual open regex and close regex should not. 
-				-if it doesnt match any open or close regex, then we know that the escape char used
-			-when checking the close regex, we need to make sure the entire string matches
-				-see if the match value is identical to the original value
-
-	Strip unescaped ^ and $ from all regex sources
-				
-	For input object:
-		-can use 'mate' to just match one pair ['(',')']
-		otherwise, use mates
+		-need to make sure the escape character/string itself is not escaped
+			-make sure it appears an odd number of times...
+		-ONLY use inside 'escape' brackets??
 		
-	Default 'escape chars' should also include comments and regex?:
-		/* and */				
-/*		// and (\r\n?|\n)
-		/ and / (regex)	
-	
-	Default mates should already be a mates object?
-	
-	If we allow the Extraction to return even when there are unclosed nests, we should still delete all closeRegex properties
-		
-	Add in way to update the Settings
+	Create default Brackets objects
+		-Brackets.JS.Quotes
+		-Brackets.JS.Comments
+			/* and */				
+	/*		// and (\r\n?|\n)
+		-Brackets.JS.Regex
+			/ and / (regex)	
 		
 	Add functions:
+	handle
+		-returns a string by running each handle function on each nest
 	parse
 		-will return a Nest object of the entire string
 			-initialize a currentNest
@@ -59,6 +43,10 @@ Todo:
 		-will look for parenthesis
 			-if prefix matches a property of the given object, then send to obj[prop] (which is a function)
 			-if no prefix, then run vm.runInNewContext
+	-strip: to remove everything inside the brackets (returns a string)
+	-replace : automatically run the replace function when .close() happens
+		-utilize an onClose callback
+			-this can be used for the 'extract' function too (to see if # of matches is reached)
 		
 	The Nest object is an actual object
 		-has function 'flatten', flatten the nest where each open/close is replaced by the given string
@@ -75,6 +63,7 @@ Todo:
 */
 
 var Settings = {
+		defaultEscape : '\\',
 		defaultCaptureMates : [['(',')']],
 		defaultEscapeMates : [['"','"'],["'","'"],['`','`']],
 		//to match regex before strings
@@ -196,6 +185,26 @@ function isRegExp( val ){
 	return val !== undefined && val !== null && val.constructor === RegExp;
 }
 
+function noOp( str ){
+	return str;
+}
+
+function Brackets( data ){
+	var data = typeof data === "object" ? data : {},
+		open = data.open,
+		close = data.close,
+		handle = typeof data.handle === "function" ? data.handle : noOp,
+		delim = data.delim,
+		delimBefore = 'delimBefore' in data ? data.delimBefore : delim,
+		delimAfter = 'delimAfter' in data ? data.delimAfter : delim,
+		escape = data.escape,
+		escapeOutside = 'escapeOutside' in data ? data.escapeOutside : escape,
+		escapeInside = 'escapeInside' in data ? data.escapeInside : escape;
+		
+	
+		
+}
+
 function MateMap( allClose, isString, regexFirst ){
 	this.isString = isString;
 	this.regexFirst = regexFirst;
@@ -206,26 +215,26 @@ function MateMap( allClose, isString, regexFirst ){
 }
 
 MateMap.prototype.add = function( open, close ){
-	var mateList,
+	var regexList,
 		//if this MateMap is for regex, then extract the source;
 		open = this.isString ? open : open.source,
 		index = this.open.indexOf( open );
 	
 	if( index === -1 ){
 		this.open.push( open );
-		mateList = new MateList( this.regexFirst )
-		this.close.push( mateList );
+		regexList = new RegexList( this.regexFirst )
+		this.close.push( regexList );
 	}
-	else mateList = this.close[index];
+	else regexList = this.close[index];
 	
-	this.mateList = mateList;
+	this.regexList = regexList;
 	
 	if( isArray( close ) ) this.close.forEach( this.addClose, this);
 	else this.addClose( close );
 }
 
 MateMap.prototype.addClose = function( val ){
-	this.mateList.add( val );
+	this.regexList.add( val );
 	this.allClose.add( val );
 }
 
@@ -250,32 +259,34 @@ MateMap.prototype.finish = function(){
 	this.closeRegex = [];
 	
 	//turn all Close regex sources into regular expressions
-	this.close.forEach(function( mateList ){
-		//get an array of sources
-		var sources = mateList.toSource(),
-			//combine them all into a single regex
-			regex = combineRegex( sources );
+	this.close.forEach(function( regexList ){
+		//get the regex list as a regex source string
+		var source = regexList.toString();
 		//add it to the close regex array
-		self.closeRegex.push( regex );
+		self.closeRegex.push( new RegExp( '^' + source + '$' ) );
 	});
 	
 }
 
-function MateList( regexFirst ){
+function RegexList( regexFirst ){
 	this.string = [];
 	this.regex = [];
 	this.regexFirst = regexFirst;
 }
 
 //convert these mate list to a single source array
-MateList.prototype.toSource = function(){
+RegexList.prototype.toString = function(){
 	//sort the strings by length and convert to regex safe
 	var arr = this.string.sort( sortArrayByLength ).map( makeRegexSafe );
 	
-	return this.regexFirst ? this.regex.concat( arr ) : arr.concat( this.regex );
+	arr = this.regexFirst ? this.regex.concat( arr ) : arr.concat( this.regex );
+	
+	this.source = arr.join('|');
+	
+	return this.source;
 }
 
-MateList.prototype.add = function( val ){
+RegexList.prototype.add = function( val ){
 	var arr;
 	
 	//if regex:
@@ -296,7 +307,7 @@ MateList.prototype.add = function( val ){
 function Mates( mates, defaultMates, regexFirst, escape ){
 		
 	var allOpenSources, allCloseSources,
-		allClose = new MateList( regexFirst );
+		allClose = new RegexList( regexFirst );
 	
 	this.escape = escape;
 	this.regexFirst = regexFirst;
@@ -319,26 +330,26 @@ function Mates( mates, defaultMates, regexFirst, escape ){
 	
 	//array of all open regexs
 	this.openMap = this.concat( this.stringMap.openRegex, this.regexMap.openRegex );
-	//combine the open sources 
-	allOpenSources = this.concat( this.stringMap.open, this.regexMap.open );
+	
+	//combine the open into a single string
+	allOpenSources = this.concat( this.stringMap.open, this.regexMap.open ).join('|');
 	this.allOpenRegex = this.newRegex( allOpenSources );
 	
 	//array of all mate regex arrays
 	this.closeMap = this.concat( this.stringMap.closeRegex, this.regexMap.closeRegex );
 	
-	//Get all of the Close possibilities as an array of regex sources
-	allCloseSources = allClose.toSource()
+	//Get all of the Close possibilities as a regex source string
+	allCloseSources = allClose.toString()
 	//combine them into a single regex
 	this.allCloseRegex = this.newRegex( allCloseSources );
 	
-	//combine all of the sources into a single array
-	this.combinedSources = allOpenSources.concat( allCloseSources );
+	//combine all of the sources into a single source string
+	this.combinedSources = allOpenSources + '|' + allCloseSources;
 }
 
-Mates.prototype.newRegex = function( arr ){
+Mates.prototype.newRegex = function( src ){
 	//TODO: escape can be a regex, str, or array of each
-	//todo what if the regex source already contains ^ and $?
-	return new RegExp( '^(' + this.escape + '?(?:' + arr.join('|') + '))$' );
+	return new RegExp( '^(' + this.escape + '?(?:' + src + '))$' );
 }
 
 Mates.prototype.concat = function( str, regex ){
@@ -363,19 +374,23 @@ Mates.prototype.addMate = function( open ){
 //to create a regular expression for a brackets object
 function BracketData( obj ){
 
-	var mates;
-
-	//TODO: escape can be a regex, str, or array of each
-	this.escape = makeRegexSafe( obj.escape );
-	this.escapeRegex = new RegExp( '^' + this.escape );
-	
-	
+	var mates, escape;
+		
 	this.escapeInner = obj.escapeInner;
 	this.escapeOuter = obj.escapeOuter;
 	this.removeEscape = obj.removeEscape;
-	
 	this.regexFirst = obj.regexFirst;
 	
+	escape = new RegexList( this.regexFirst );
+
+	console.log(obj.escape);
+	if( isArray( obj.escape ) ) obj.escape.forEach( escape.add );
+	else escape.add( obj.escape );
+	
+	this.escape = escape.toString();
+	console.log(escape);
+	console.log(this.escape);
+	this.escapeRegex = new RegExp( '^' + this.escape );
 	//TODO: throw error if no valid open or close mate?
 	mates = new Mates( obj.mates, obj.defaultMates, this.regexFirst, this.escape );
 	
@@ -614,7 +629,7 @@ function Extractor( captureMates, escapeMates ){
 		capture = new BracketData({
 			mates : captureMates,
 			defaultMates : Settings.defaultCaptureMates,
-			escape : '\\',
+			escape : Settings.defaultEscape,
 			escapeInner : false,
 			escapeOuter : false,
 			removeEscape : false,
@@ -625,7 +640,7 @@ function Extractor( captureMates, escapeMates ){
 		escape =  new BracketData({
 			mates : escapeMates,
 			defaultMates : Settings.defaultEscapeMates,
-			escape : '\\',
+			escape :  Settings.defaultEscape,
 			escapeInner : true,
 			escapeOuter : false,
 			removeEscape : false,
@@ -634,7 +649,7 @@ function Extractor( captureMates, escapeMates ){
 			regexFirst : Settings.regexFirst
 		});
 	
-	regex = new RegExp( '(' + capture.escape + '?(?:' + capture.combined.join('|') + ')|'+ escape.escape + '?(?:' + escape.combined.join('|') + ')' + ')');
+	regex = new RegExp( '(' + capture.escape + '?(?:' + capture.combined + ')|'+ escape.escape + '?(?:' + escape.combined + ')' + ')');
 		
 	this.extract = function( str, count ){
 	

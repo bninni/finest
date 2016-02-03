@@ -1,6 +1,6 @@
 {
-  "name": "extract-brackets",
-  "version": "0.0.7",
+  "name": "finest",
+  "version": "0.0.1",
   "description": "Extract nested brackets from strings",
   "main": "index.js",
   "scripts": {
@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bninni/extract-brackets.git"
+    "url": "git+https://github.com/bninni/finest.git"
   },
   "keywords": [
     "extract",
@@ -29,7 +29,7 @@
   "author": "Brian Ninni <brian@ninni.io> (http://ninni.io)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/bninni/extract-brackets/issues"
+    "url": "https://github.com/bninni/finest/issues"
   },
-  "homepage": "https://github.com/bninni/extract-brackets#readme"
+  "homepage": "https://github.com/bninni/finest#readme"
 }
