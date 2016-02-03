@@ -1,4 +1,4 @@
-#extract-brackets
+#fi(nd)nest
 
 To extract nested brackets from strings.  
 
