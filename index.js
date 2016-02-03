@@ -7,21 +7,20 @@ Todo:
 	
 	Make sure all custom regex does not include capture groups
 	
-	A way to have multiple different mates within the Brackets object?
-		-instead of 'open' and 'close', use 'mate' or 'mates' property
-		-Use a BracketList object??
-			-create a new Brackets object for each mate
-				-how to handle duplicate openings??
-		
-	Errors:
-		-Custom error function?
-		-Throw Error when encounter unmatched 'close' tag??
-	
-	For Escape:
+	Brackets:
 		-need to make sure the escape character/string itself is not escaped
 			-make sure it appears an odd number of times...
 		-separate outerEscape and innerEscape
-		
+		-instead of 'open' and 'close', use 'mate' or 'mates' property
+		-Use a BracketList object??
+			-create a new Brackets object for each mate
+				-how to handle duplicate opening strings/regexes??
+
+	Errors:
+		-Custom error function?
+		-better name for 'Unclosed String Detected'
+		-Throw Error when encounter unmatched 'close' tag??
+	
 	Create default Brackets objects
 		-Brackets.JS.Quotes
 		-Brackets.JS.Comments
@@ -179,21 +178,57 @@ var RegexList = (function(){
 
 })();
 
+var BracketsList = (function(){
+	function BracketsList( data ){
+		var brackets = [];
+		this.brackets = brackets;
+		
+		data.mates.forEach(function( mate ){
+			var newData = {
+				open : mate[0],
+				close : mate[1],
+				handle : data.handle,
+				escape : data.escape,
+				canHaveNest : data.canHaveNest
+			}
+
+			brackets.push( new Brackets( newData ) );
+		});
+		
+	}
+	
+	return BracketsList;
+	
+})();
+
 var Brackets = (function(){
 
 	function defaultHandle( str ){
 		return str;
 	}
 	
-	//TODO: throw error if no mate/mates?
+	//TODO: throw error if no 'open'??
+	//TODO: accepted just a string or just an array?
 	function Brackets( data ){
 		var data = typeof data === "object" ? data : {},
-			open =  new RegexList( data.open ),
-			close = new RegexList( data.close ),
-			escape = new RegexList( data.escape ),
-			handle = typeof data.handle === "function" ? data.handle : defaultHandle,
-			openSource, closeSource, escapeSource, openRegex, closeRegex,
-			isBuilt = false;
+			isBuilt = false,
+			open = data.open,
+			close = data.close,
+			escape, handle, openSource, closeSource, escapeSource, openRegex, closeRegex;
+		
+		if( 'mates' in data && isArray( data.mates ) ) return new BracketsList( data );
+		
+		if( 'mate' in data && isArray( data.mate ) ){
+			open = data.mate[0];
+			close = data.mate[1];
+		}
+		
+		open =  new RegexList( open );
+		//TODO: if( !close ) close = getMate( open );
+		close = new RegexList( close );
+		
+		escape = new RegexList( data.escape );
+		handle = typeof data.handle === "function" ? data.handle : defaultHandle;
 		
 		this.canHaveNest = typeof data.canHaveNest === 'boolean' ? data.canHaveNest : true;
 		
@@ -510,6 +545,8 @@ var CombinedBrackets = (function(){
 	
 	CombinedBrackets.prototype.add = function( bracket ){
 		
+		if( bracket instanceof BracketsList ) return bracket.brackets.forEach( this.add, this );
+		
 		if( !(bracket instanceof Brackets) ) return;
 		
 		bracket.build( this.regexFirst );
@@ -534,7 +571,7 @@ var Parser = (function(){
 			escape = new CombinedBrackets( escapeBrackets, regexFirst ),
 			escapeCombinedSources = escape.combinedSources ? ('|' + escape.combinedSources) : '',
 			regex = new RegExp( '(?:^|\\b)?(' + capture.combinedSources + escapeCombinedSources + ')(?:\\b|$)?' );
-			
+				
 		this.extract = function( str, count ){
 		
 			if (typeof count !== "number") count = -1;
@@ -547,26 +584,15 @@ var Parser = (function(){
 })();
 
 var JS = {
-	Strings : [
-		new Brackets({
-			open : '"',
-			close : '"',
-			escape : '\\',
-			canHaveNest : false
-		}),
-		new Brackets({
-			open : '\'',
-			close : '\'',
-			escape : '\\',
-			canHaveNest : false
-		}),
-		new Brackets({
-			open : '`',
-			close : '`',
-			escape : '\\',
-			canHaveNest : false
-		})
-	]
+	Strings : new Brackets({
+		mates : [
+			['"','"'],
+			['\'','\''],
+			['`','`'],
+		],
+		escape : '\\',
+		canHaveNest : false
+	})
 }
 
 module.exports = {
