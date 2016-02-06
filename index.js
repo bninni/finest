@@ -2,19 +2,24 @@
 Copyright Brian Ninni 2016
 
 Todo:
+	
+	In Extraction, make the closeRegex a combination of all closeRegex whose openRegex matches the current string
 
+	Turn the current 'Nest' object into a 'NestWrapper'.  Create a new 'Nest' object which will be the return/public class.
+		-each 'NestWrapper' will have a property .public which points to the corresponding public 'Nest' object.
+	
 	Tests, Readme, Comments
 	
 	Make sure all custom regex does not include capture groups
+	
+	Using \b at start did not work
+		-detected 'open(' out of 'jopen('
 	
 	Brackets:
 		-need to make sure the escape character/string itself is not escaped
 			-make sure it appears an odd number of times...
 		-separate outerEscape and innerEscape
-		-instead of 'open' and 'close', use 'mate' or 'mates' property
-		-Use a BracketList object??
-			-create a new Brackets object for each mate
-				-how to handle duplicate opening strings/regexes??
+		-how to handle duplicate opening strings/regexes??
 
 	Errors:
 		-Custom error function?
@@ -22,7 +27,6 @@ Todo:
 		-Throw Error when encounter unmatched 'close' tag??
 	
 	Create default Brackets objects
-		-Brackets.JS.Quotes
 		-Brackets.JS.Comments
 			/* and * /				
 			// and (\r\n?|\n)
@@ -188,8 +192,7 @@ var BracketsList = (function(){
 				open : mate[0],
 				close : mate[1],
 				handle : data.handle,
-				escape : data.escape,
-				canHaveNest : data.canHaveNest
+				escape : data.escape
 			}
 
 			brackets.push( new Brackets( newData ) );
@@ -230,8 +233,6 @@ var Brackets = (function(){
 		escape = new RegexList( data.escape );
 		handle = typeof data.handle === "function" ? data.handle : defaultHandle;
 		
-		this.canHaveNest = typeof data.canHaveNest === 'boolean' ? data.canHaveNest : true;
-		
 		Object.defineProperty(this, 'isBuilt', {
 			get : function(){
 				return isBuilt;
@@ -271,10 +272,11 @@ var Brackets = (function(){
 })();
 
 var Extraction = (function(){
-	function Extraction( capture, escape, regex ){
+	function Extraction( capture, escape, regex, maxDepth ){
 		this.capture = capture;
 		this.escape = escape;
 		this.regex = regex;
+		this.maxDepth = maxDepth;
 	}
 
 	Extraction.prototype.extract = function( str, count ){
@@ -312,9 +314,9 @@ var Extraction = (function(){
 		
 		//if there is a current nest and the string is a close match, then close
 		if( this.currentNest && str.match( this.currentNest.closeRegex ) ) return this.closeNest( str );
-		
+
 		//if it matches an open Regex:
-		if( (!this.currentNest || this.currentNest.canHaveNest) && str.match( this.capture.openRegex ) ) return this.openNest( str );
+		if( (!this.currentNest || this.currentNest.public.depth !== this.maxDepth ) && str.match( this.capture.openRegex ) ) return this.openNest( str );
 		
 		//if it matches any close Regex:
 		if( str.match( this.capture.closeRegex ) ){
@@ -352,14 +354,13 @@ var Extraction = (function(){
 	}
 
 	Extraction.prototype.openNest = function( str ){
-		
 		//Create the new Nest
 		var self = this,
 			bracket = this.getBracket( str ),
-			nest = new Nest( str, this.index, this.currentNest, bracket.closeRegex, bracket.canHaveNest );
+			nest = new Nest( str, this.index, this.currentNest, bracket.closeRegex );
 			
-		//if there is no current nest, save the new nest as a new match
-		if( !this.currentNest ) this.matches.push( nest );
+		//if there is no current nest, save the new nest's public value as a new match
+		if( !this.currentNest ) this.matches.push( nest.public );
 		
 		//set the result to be the new object
 		this.currentNest = nest;
@@ -389,75 +390,70 @@ var Extraction = (function(){
 
 })();
 
-//to create a new nest
 var Nest = (function(){
-	function Nest( str, startIndex, parent, closeRegex, canHaveNest ){
-		
-		var self = this,
-			closed = false;
-		
+
+	function Nest( str, startIndex, parent ){
 		this.nest = [];
 		this.simple = [];
 		this.hasChildNest = false;
 		this.content = '';
 		this.open = str;
 		this.close = null;
-		this.index = [ startIndex ];
+		this.index = [startIndex];
 		this.nextIndex = [];
 		this.matches = [];
 		this.ancestors = [];
-		this.parent = parent;
+		this.parent = parent ? parent.public : null;
 		this.depth = 0;
-		this.lastEntryType = null;
-		this.closeRegex = closeRegex;
-		this.canHaveNest = canHaveNest;
+	}
+	
+	function NestWrapper( str, startIndex, parent, closeRegex ){
+	
+		//initialize the public Nest
+		var nest = new Nest( str, startIndex, parent );
 		
-		Object.defineProperty( this, "isClosed", {
-			get : function(){
-				return closed;
-			}
-		},{
-			enumerable : true
-		});
+		this.parent = parent;
 		
-		this.setClosed = function(){
-			closed = true;
-		}
+		this.public = nest;
+		
+		//shortcuts to the public object values
+		this.matches = nest.matches;
+		this.nest = nest.nest;
+		this.simple = nest.simple;
+		this.nextIndex = nest.nextIndex;
+		this.index = nest.index;
 		
 		//add this as child nest to the parent
 		if( parent ){
-			parent.addChildNest( this );
+			parent.addChildNest( nest );
 			
 			while( parent ){
-				this.ancestors.unshift( parent );
-				this.index.unshift( startIndex - parent.index[0] - parent.open.length );
-				this.depth++;
+				nest.ancestors.unshift( parent.public );
+				nest.index.unshift( startIndex - parent.index[0] - parent.public.open.length );
+				nest.depth++;
 				parent = parent.parent;
 			}
 			
 		}
+		
+		this.lastEntryType = null;
+		this.closeRegex = closeRegex;
 	}
 
-	Nest.prototype.addChildNest = function( child ){
-		
-		if( this.isClosed ) return false;
-			
+	NestWrapper.prototype.addChildNest = function( child ){
+					
 		this.lastEntryType = Nest;
 		
-		this.hasChildNest = true;
+		this.public.hasChildNest = true;
 		this.matches.push( child );
 		this.nest.push( child );
 		this.simple.push( child.simple );
 		
 		//add the child's open string to this content
 		this.addContentString( child.open );
-		
-		return true;
 	}
 
-	Nest.prototype.addChildString = function( str ){
-		
-		if( this.isClosed ) return false;
+	NestWrapper.prototype.addChildString = function( str ){
 		
 		//add this string to the content (and all parent contents)
 		this.addContentString( str );
@@ -472,51 +468,34 @@ var Nest = (function(){
 		}
 		
 		this.lastEntryType = String;
-		
-		return true;
 	}
 
-	Nest.prototype.addParentContentString = function( str ){
-		if( this.isClosed ) return false;
-		
+	NestWrapper.prototype.addParentContentString = function( str ){
 		if( this.parent ) this.parent.addContentString( str );
-		
-		return true;
 	}
 
-	Nest.prototype.addContentString = function( str ){
-		if( this.isClosed ) return false;
-		this.content += str;
+	NestWrapper.prototype.addContentString = function( str ){
+		this.public.content += str;
 		this.addParentContentString( str );
-		return true;
 	}
 
-	Nest.prototype.finish = function( str ){
+	NestWrapper.prototype.finish = function( str ){
 		
 		var self = this,
-			length = this.open.length + this.content.length + str.length;
-		
-		if( this.isClosed ) return false;
-		
+			length = this.public.open.length + this.public.content.length + str.length;
+				
 		//get the next index for each ancestor
 		this.index.forEach(function( i ){
 			self.nextIndex.push( i + length );
 		});
 		
-		this.close = str;
+		this.public.close = str;
 		this.addParentContentString( str );
-		
-		this.setClosed();
-		
-		//the following properties should not be public
-		delete this.closeRegex;
-		delete this.lastEntryType;
-		delete this.setClosed;
 		
 		return this.parent;
 	}
 	
-	return Nest;
+	return NestWrapper;
 })();
 
 var CombinedBrackets = (function(){
@@ -567,6 +546,7 @@ var Parser = (function(){
 		
 		var opts = typeof opts === 'object' ? opts : {},
 			regexFirst = opts.regexFirst,
+			maxDepth = opts.maxDepth,
 			capture = new CombinedBrackets( captureBrackets, regexFirst ),
 			escape = new CombinedBrackets( escapeBrackets, regexFirst ),
 			escapeCombinedSources = escape.combinedSources ? ('|' + escape.combinedSources) : '',
@@ -576,7 +556,7 @@ var Parser = (function(){
 		
 			if (typeof count !== "number") count = -1;
 		
-			return new Extraction( capture, escape, regex ).extract( str, count );
+			return new Extraction( capture, escape, regex, maxDepth ).extract( str, count );
 		}
 	}
 	
@@ -590,8 +570,7 @@ var JS = {
 			['\'','\''],
 			['`','`'],
 		],
-		escape : '\\',
-		canHaveNest : false
+		escape : '\\'
 	})
 }
 
