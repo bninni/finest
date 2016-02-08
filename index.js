@@ -1,25 +1,22 @@
 /*
 Copyright Brian Ninni 2016
 
+Changes:
+	-updated the 'splitting by regex' method to work with multiple open/close strings in a row
+	-handles when escape characters are escaped
+	
 Todo:
 	
-	In Extraction, make the closeRegex a combination of all closeRegex whose openRegex matches the current string
-
-	Turn the current 'Nest' object into a 'NestWrapper'.  Create a new 'Nest' object which will be the return/public class.
-		-each 'NestWrapper' will have a property .public which points to the corresponding public 'Nest' object.
-	
 	Tests, Readme, Comments
+		-make note that if the use a regex, it will match in the order it is listed
+			-pen will match before penny
+	
+	The 'escape' character should apply to the contents of the nest, not the open and close of the nest
+		-parser would need its own escape character for top level
+	
+	In Extraction, make the closeRegex a combination of all closeRegex whose openRegex matches the current string
 	
 	Make sure all custom regex does not include capture groups
-	
-	Using \b at start did not work
-		-detected 'open(' out of 'jopen('
-	
-	Brackets:
-		-need to make sure the escape character/string itself is not escaped
-			-make sure it appears an odd number of times...
-		-separate outerEscape and innerEscape
-		-how to handle duplicate opening strings/regexes??
 
 	Errors:
 		-Custom error function?
@@ -257,12 +254,12 @@ var Brackets = (function(){
 			closeSource = close.toString( regexFirst );
 			escapeSource = escape.toString( regexFirst );
 			
-			openRegex = new RegExp( '^' + openSource + '$' );
-			closeRegex = new RegExp( '^' + closeSource + '$' );
+			openRegex = new RegExp( '^' + (escapeSource ? ('(' + escapeSource + '{2})*(') : '(') +  openSource + ')$' );
+			closeRegex = new RegExp( '^' + (escapeSource ? ('(' + escapeSource + '{2})*(') : '(') +  closeSource + ')$' );
 			
 			this.openSource = openSource;
 			this.closeSource = closeSource;
-			this.escapeSource = escapeSource ? '(?:' + escapeSource + ')?' : '';
+			this.escapeSource = escapeSource ? '(?:' + escapeSource + ')' : '';
 			
 			isBuilt = true;
 		}
@@ -272,29 +269,46 @@ var Brackets = (function(){
 })();
 
 var Extraction = (function(){
-	function Extraction( capture, escape, regex, maxDepth ){
+	function Extraction( capture, escape, regex, subRegex, maxDepth ){
 		this.capture = capture;
 		this.escape = escape;
 		this.regex = regex;
+		this.subRegex = subRegex;
 		this.maxDepth = maxDepth;
 	}
 
 	Extraction.prototype.extract = function( str, count ){
-		var arr = str.split( this.regex ),
-			l = arr.length,
-			i;
+		var self = this,
+			arr = str.split( this.regex ),
+			length = arr.length,
+			i=0,
+			cont = true,
+			j, subArr, subLength;
 			
 		this.matches = [];
 		this.isEscaped = false;
 		this.index = 0;
 		
-		for(i=0;i<l;i++){
-			this.handleStr( arr[i] );
-			
+		function runStr( str ){
+			self.handleStr( str );
 			//if we are at the top of the chain and the number of matches is reached, then break
-			if( !this.currentNest && this.matches.length === count) break;
-			
-			this.index += arr[i].length;
+			if( !self.currentNest && self.matches.length === count) cont = false;
+			else self.index += str.length;
+		}
+		
+		while( cont && i<length ){
+			//if it is a match of the regex, then split at each
+			if( arr[i].match( this.regex ) ){
+				subArr = arr[i].split( this.subRegex );
+				subLength = subArr.length;
+				j=0;
+				while( cont && j<subLength ){
+					runStr( subArr[j] );					
+					j++;
+				}
+			}
+			else runStr( arr[i] );
+			i++;
 		}
 		
 		//if there is still a result, then there was an error
@@ -308,33 +322,40 @@ var Extraction = (function(){
 	}
 
 	Extraction.prototype.handleStr = function( str ){
-		var index;
+		var match;
 		
-		if( this.isEscaped ) return this.handleEscaped( str );
+		if( this.isEscaped ){
+			//if it matches the Escape Close RegEx then unescape
+			if( str.match( this.unescapeRegex ) ){
+				this.isEscaped = false;
+				this.unescapeRegex = null;
+			}
+			return this.addString( str );
+		}
 		
 		//if there is a current nest and the string is a close match, then close
-		if( this.currentNest && str.match( this.currentNest.closeRegex ) ) return this.closeNest( str );
+		if( this.currentNest && (match = str.match( this.currentNest.closeRegex )) ){
+			this.addString( match[1] );
+			return this.closeNest( match[2] );
+		}
 
 		//if it matches an open Regex:
-		if( (!this.currentNest || this.currentNest.public.depth !== this.maxDepth ) && str.match( this.capture.openRegex ) ) return this.openNest( str );
+		if( (!this.currentNest || this.currentNest.public.depth !== this.maxDepth ) && (match = str.match( this.capture.openRegex )) ){
+			this.addString( match[1] )
+			return this.openNest( match[2] );
+		}
 		
 		//if it matches any close Regex:
-		if( str.match( this.capture.closeRegex ) ){
+		if( (match = str.match( this.capture.closeRegex )) ){
 			//TODO: throw error here, closeRegex encountered without openRegex??
 		}
 		
 		//if it matches an escape open regex, then set escaped
-		if( str.match( this.escape.openRegex ) ) return this.setEscaped( str );
-		
-		this.addString( str );
-	}
-
-	Extraction.prototype.handleEscaped = function( str ){
-		//if it matches the Escape Close RegEx then unescape
-		if( str.match( this.unescapeRegex ) ){
-			this.isEscaped = false;
-			this.unescapeRegex = null;
+		if( (match = str.match( this.escape.openRegex )) ){
+			this.addString( match[1] );
+			return this.setEscaped( match[2] );
 		}
+		
 		this.addString( str );
 	}
 
@@ -358,7 +379,7 @@ var Extraction = (function(){
 		var self = this,
 			bracket = this.getBracket( str ),
 			nest = new Nest( str, this.index, this.currentNest, bracket.closeRegex );
-			
+
 		//if there is no current nest, save the new nest's public value as a new match
 		if( !this.currentNest ) this.matches.push( nest.public );
 		
@@ -372,7 +393,10 @@ var Extraction = (function(){
 			arr = this.capture.brackets,
 			l=arr.length;
 		
-		for(i=0;i<l;i++) if( arr[i].isOpenMatch(str) ) return arr[i];
+		for(i=0;i<l;i++){
+			console.log(arr[i]);
+			if( arr[i].isOpenMatch(str) ) return arr[i];
+		}
 		//TODO - throw error here?
 	}
 
@@ -524,16 +548,20 @@ var CombinedBrackets = (function(){
 	
 	CombinedBrackets.prototype.add = function( bracket ){
 		
+		var escapeSource;
+		
 		if( bracket instanceof BracketsList ) return bracket.brackets.forEach( this.add, this );
 		
 		if( !(bracket instanceof Brackets) ) return;
 		
 		bracket.build( this.regexFirst );
 		
+		escapeSource = bracket.escapeSource;
+		
 		this.brackets.push( bracket );
-		this.openSources.push( '(?:' + bracket.openSource + ')' );
-		this.closeSources.push( '(?:' + bracket.closeSource + ')' );
-		this.combinedSourcesArray.push( bracket.escapeSource + '(?:' + bracket.openSource + '|' + bracket.closeSource + ')' );
+		this.openSources.push( (escapeSource ? ('(' + escapeSource + '{2})*') : '') + '(' + bracket.openSource + ')' );
+		this.closeSources.push( (escapeSource ? ('(' + escapeSource + '{2})*') : '') + '(' + bracket.closeSource + ')' );
+		this.combinedSourcesArray.push( (escapeSource ? (escapeSource + '*') : '' ) + '(?:' + bracket.openSource + '|' + bracket.closeSource + ')' );
 	}
 	
 	return CombinedBrackets;
@@ -550,13 +578,13 @@ var Parser = (function(){
 			capture = new CombinedBrackets( captureBrackets, regexFirst ),
 			escape = new CombinedBrackets( escapeBrackets, regexFirst ),
 			escapeCombinedSources = escape.combinedSources ? ('|' + escape.combinedSources) : '',
-			regex = new RegExp( '(?:^|\\b)?(' + capture.combinedSources + escapeCombinedSources + ')(?:\\b|$)?' );
-				
+			regex = new RegExp( '(?:^|\\b)((?:' + capture.combinedSources + escapeCombinedSources + ')+)(?:\\b|$)' ),
+			subRegex = new RegExp( '(' + capture.combinedSources + escapeCombinedSources + ')' );
 		this.extract = function( str, count ){
 		
 			if (typeof count !== "number") count = -1;
 		
-			return new Extraction( capture, escape, regex, maxDepth ).extract( str, count );
+			return new Extraction( capture, escape, regex, subRegex, maxDepth ).extract( str, count );
 		}
 	}
 	
