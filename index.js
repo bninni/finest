@@ -2,21 +2,23 @@
 Copyright Brian Ninni 2016
 
 Changes:
-	-Added in top level escape for Parser
-	-Added in Nest.Base class
-	-Added in parser.parse, strip, replace
+	Fixed bug in the Extraction.extract
+	nest.original -> nest.rawContent
+	CombinedBrackets now has:
+		-isOpenMatch
+		-isCloseMatch
+		-getOpenMatch
 
 Todo:
 	Tests, Readme, Comments
 		-make note that if the use a regex, it will match in the order it is listed
 			-pen will match before penny
-		-note that the nextIndex array is not accessible in the nest handle function
-				
-	The return Bracket object should have no properties, it should just map to the private bracket object instead
+		-make note that if a segment matches multiple open brackets, the first one listed will be used
+			-this is because the 'escapeRegex' is specific to a bracket
 		
-	In Extraction, make the closeRegex a combination of all closeRegex whose openRegex matches the current string
+	The public Brackets object should have no properties, it should just map to an internal object
 	
-	Rename nest.original to nest.rawContent?
+	Merge CombinedBrackets and BracketList??
 	
 	Parser options:
 		-wordBoundary
@@ -24,6 +26,7 @@ Todo:
 			-don't close if the last char of the close string and first char of next string both match \w
 		-error function
 			-finish all TODOs about errors
+			-go through and see if any other places should have todos
 		
 	The Nest object:
 		-has function 'flatten', flatten the nest where each open/close is replaced by the given string
@@ -247,6 +250,14 @@ var Brackets = (function(){
 		}
 	}
 	
+	Brackets.prototype.isOpenMatch = function( str ){
+		return str.match( this.openRegex );
+	}
+	
+	Brackets.prototype.isCloseMatch = function( str ){
+		return str.match( this.closeRegex );
+	}
+	
 	return Brackets;
 })();
 
@@ -279,38 +290,30 @@ var Extraction = (function(){
 
 	Extraction.prototype.extract = function( str, count ){
 		//initialize the base nest, but don't include it in the results
-		var baseNest = this.init( str, false );
-		
+		var self = this,
+			baseNest = this.init( str, false );
 		this.handleAllStringsUntil(function(){
-			baseNest.matches.length === count;
+			return self.currentNest === self.baseNest && baseNest.matches.length === count;
 		});
-		
 		return this.returnIfNoError( baseNest.matches );
 	}
 
 	Extraction.prototype.handle = function( str ){
 		var baseNest = this.init( str, true );
-		
 		this.handleAllStrings();
-		
 		return this.returnIfNoError( baseNest.content );
 	}
 
 	Extraction.prototype.parse = function( str ){	
 		var baseNest = this.init( str, true );
-		
 		this.handleAllStrings();
-		
 		return this.returnIfNoError( baseNest );
 	}
 
 	Extraction.prototype.replace = function( str, fn ){
 		var baseNest = this.init( str, true );
-		
 		this.nestHandle = fn;
-		
 		this.handleAllStrings();
-		
 		return this.returnIfNoError( baseNest.content );
 	}
 	
@@ -331,43 +334,37 @@ var Extraction = (function(){
 
 	Extraction.prototype.handleString = function( str ){
 
-		//if there is a current nest and the last portion of the content is escaped, then just add the string
+		//if the last portion of the content is escaped, then just add the string
 		if( this.currentNest.endsWithEscape ) return this.addString( str );
 
-		//if there is a current nest and the string is a close match, then close
+		//if the string is a close match, then close
 		if( this.currentNest.isCloseMatch( str ) ) return this.closeNest( str );
 		
 		//if we are at the max depth, then add the string
 		if( this.currentNest.atMaxDepth ) return this.addString( str );
 		
 		//if it matches an open Regex:
-		if( str.match( this.capture.openRegex ) ) return this.openNest( str, false );
+		if( this.capture.isOpenMatch( str ) ) return this.openNest( str, false );
 		
 		//if it matches any close Regex:
-		if( str.match( this.capture.closeRegex ) ){
+		if( this.capture.isCloseMatch( str ) ){
 			//TODO: throw error here, closeRegex encountered without openRegex??
+			//what about ignore?
 		}
 		
 		//if it matches an escape open regex, then set escaped
-		if( str.match( this.ignore.openRegex ) ) return this.openNest( str, true );
+		if( this.ignore.isOpenMatch( str ) ) return this.openNest( str, true );
 		
 		this.addString( str );
 	}
 
 	Extraction.prototype.openNest = function( str, doIgnore ){
-		var bracket = this.getBracket( str, doIgnore ),
+		var bracket = (doIgnore ? this.ignore : this.capture).getOpenMatch( str ),
 			handle = this.nestHandle ? this.nestHandle : bracket.handle;
+			
+		//TODO: throw error if bracket === null?
+			
 		this.currentNest = new Nest.Wrapper( str, this.currentNest, bracket, handle, this.index, doIgnore );
-	}
-
-	//to determine what the new bracket should be based on the str
-	Extraction.prototype.getBracket = function( str, doIgnore ){
-		var i,
-			arr = doIgnore ? this.ignore.brackets : this.capture.brackets,
-			l = arr.length;
-		
-		for(i=0;i<l;i++) if( str.match( arr[i].openRegex ) ) return arr[i];
-		//TODO - throw error here?
 	}
 
 	//to add text to the current result if there is one
@@ -377,7 +374,6 @@ var Extraction = (function(){
 
 	Extraction.prototype.closeNest = function( str ){
 		this.currentNest.close( str );
-		if( this.onClose ) this.onClose();
 		this.currentNest = this.currentNest.parent;
 	}
 	return Extraction;
@@ -388,7 +384,7 @@ var Nest = new function(){
 		this.nest = [];
 		this.simple = [];
 		this.hasChildNest = false;
-		this.original = '';
+		this.rawContent = '';
 		this.content = '';
 		this.open = '';
 		this.close = '';
@@ -435,7 +431,7 @@ var Nest = new function(){
 	}
 
 	function addOriginalString( str ){
-		this.public.original += str;
+		this.public.rawContent += str;
 	}
 
 	function addHandledString( str ){
@@ -542,7 +538,7 @@ var Nest = new function(){
 		
 		NestWrapper.prototype.close = function( str ){
 			var nest = this.public,
-				fullString = nest.open + nest.original + str,
+				fullString = nest.open + nest.rawContent + str,
 				length = fullString.length;
 			
 			//if ignore, then just add the full string to the parent
@@ -601,6 +597,24 @@ var CombinedBrackets = (function(){
 		this.openSources.push( '(' + bracket.openSource + ')' );
 		this.closeSources.push( '(' + bracket.closeSource + ')' );
 		this.combinedSourcesArray.push( '(?:' + bracket.openSource + '|' + bracket.closeSource + ')' );
+	}
+	
+	CombinedBrackets.prototype.isOpenMatch = function( str ){
+		return str.match( this.openRegex );
+	}
+	
+	CombinedBrackets.prototype.isCloseMatch = function( str ){
+		return str.match( this.openRegex );
+	}
+	
+	CombinedBrackets.prototype.getOpenMatch = function( str ){
+		var i,
+			arr = this.brackets;
+			l = arr.length;
+		
+		for(i=0;i<l;i++) if( arr[i].isOpenMatch( str ) ) return arr[i];
+		
+		return null;
 	}
 	
 	return CombinedBrackets;
