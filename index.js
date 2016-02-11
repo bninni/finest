@@ -259,10 +259,10 @@ var Settings = {
 	Extraction = (function(){
 		var lineBreakRegex = /\r\n?|\n/g;
 		
-		function Extraction( capture, ignore, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
+		function Extraction( capture, except, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
 			
 			this.capture = capture;
-			this.ignore = ignore;
+			this.except = except;
 			this.regex = regex;
 			this.wordBoundary = wordBoundary;
 			this.isEscapeMatch = escapeObject.isEscapeMatch;
@@ -382,16 +382,16 @@ var Settings = {
 			if( this.capture.isOpenMatch( str ) ) return this.openNest( str, false );
 			
 			//if it matches an escape open regex, then set escaped
-			if( this.ignore.isOpenMatch( str ) ) return this.openNest( str, true );
+			if( this.except.isOpenMatch( str ) ) return this.openNest( str, true );
 			
 			//if it matches any close Regex:
-			if( this.capture.isCloseMatch( str ) || this.ignore.isCloseMatch( str ) ) return this.handleUnmatchedClose( str );
+			if( this.capture.isCloseMatch( str ) || this.except.isCloseMatch( str ) ) return this.handleUnmatchedClose( str );
 			
 			this.addString( str );
 		}
 
 		Extraction.prototype.openNest = function( str, doIgnore ){
-			var bracket = (doIgnore ? this.ignore : this.capture).getFirstOpenMatch( str ),
+			var bracket = (doIgnore ? this.except : this.capture).getFirstOpenMatch( str ),
 				handle = this.nestHandle ? this.nestHandle : bracket.handle;
 				
 			//if word boundary is set to true and its two consecutive word characters, then just add the string
@@ -654,6 +654,7 @@ var Settings = {
 		})();
 	},
 	Parser = (function(){
+		
 		function stripHandle(){
 			return '';
 		};
@@ -684,8 +685,8 @@ var Settings = {
 				errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : Settings.errorHandle,
 				maxDepth = typeof opts.maxDepth === "number" ? opts.maxDepth : (Settings.maxDepth ? Settings.maxDepth : -1 ), //if the Settings.maxDepth = 0, then use -1 instead
 				capture = new Brackets( opts.capture ).compile( regexFirst ),
-				ignore = new Brackets( opts.ignore ).compile( regexFirst ),
-				allCombinedSources = capture.combinedSource + (ignore.combinedSource ? ('|' + ignore.combinedSource) : ''),
+				except = new Brackets( opts.except ).compile( regexFirst ),
+				allCombinedSources = capture.combinedSource + (except.combinedSource ? ('|' + except.combinedSource) : ''),
 				regex = new RegExp( '(' + allCombinedSources + ')' ),
 				escapeSource = new RegexList( opts.escape ).toString( regexFirst ),
 				escapeObject = {};
@@ -698,7 +699,7 @@ var Settings = {
 			};
 			
 			function newExtraction(){
-				return new Extraction( capture, ignore, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
+				return new Extraction( capture, except, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
 			}
 			
 			this.extract = function( str, count ){
