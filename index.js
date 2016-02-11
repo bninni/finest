@@ -9,6 +9,9 @@ Todo:
 			-this is because the 'escapeRegex' is specific to a bracket
 		-note maxDepth=0 wont work for parser
 		-note that maxDepth will ignore any nested open brackets, so it might come across and use the wrong close bracket
+
+	The 'nest' and 'simple' strings should also be un-escaped
+		-have unescape be an option?
 */
 
 var Settings = {
@@ -22,6 +25,42 @@ var Settings = {
 			return this.open + this.content + this.close;
 		}
 	},
+	assignEscapeFunctions = (function(){
+		//to build an escape regex
+		function buildCaptureRegex( source ){
+			return source ? new RegExp("(" + source + ")+$") : null;
+		}
+
+		function buildStripRegex( source ){
+			return source ? new RegExp( "(?:" + source + ")([\\w\\W])", "g" ) : null;
+		}
+		
+		//to assign escape functions to the given object
+		function assign( target, source ){
+			var captureRegex = buildCaptureRegex( source ),
+				countRegex = new RegExp( source ),
+				stripRegex = buildStripRegex( source );
+				
+			target.stripEscapes = function( str ){
+				return str.replace( stripRegex ,"$1")
+			};
+			
+			target.isEscapeMatch = function( str ){
+				var split, count,
+					match = str.match( captureRegex );
+					
+				if( !match ) return false;
+				
+				split = match[0].split( countRegex ),
+				//the length of the split is the number of regex in a row
+				count = split.length-1;
+				//if count is odd, then there is an escape
+				return count%2;
+			};
+		}
+
+		return assign;
+	})(),
 	RegexList = (function(){
 		//Characters that need to be escaped for use in RegEx
 		var regexChars = new RegExp( '[\\' + ['^','[',']','{','}','(',')','\\','/','.',',','?','-','+','*','|','$'].join('\\') + ']', 'g' );
@@ -94,10 +133,9 @@ var Settings = {
 					ignoreSource = ignore.toString( regexFirst ),
 					openRegex = buildFullRegex( openSource ),
 					closeRegex = buildFullRegex( closeSource ),
-					escapeRegexCapture = buildEscapeRegex( escapeSource ),
-					escapeRegexCount = new RegExp( escapeSource ),
-					escapeRegexStrip = buildEscapeStripRegex( escapeSource ),
 					ignoreRegex = buildFullRegex( ignoreSource );
+					
+				assignEscapeFunctions( this, escapeSource );
 					
 				this.isOpenMatch = function( str ){
 					return str.match( openRegex );
@@ -105,23 +143,6 @@ var Settings = {
 				
 				this.isCloseMatch = function( str ){
 					return str.match( closeRegex );
-				};
-				
-				this.stripEscapes = function( str ){
-					return str.replace( escapeRegexStrip ,"$1")
-				};
-				
-				this.isEscapeMatch = function( str ){
-					var split, count,
-						match = str.match( escapeRegexCapture );
-						
-					if( !match ) return false;
-					
-					split = match[0].split( escapeRegexCount ),
-					//the length of the split is the number of regex in a row
-					count = split.length-1;
-					//if count is odd, then there is an escape
-					return count%2;
 				};
 				
 				this.isIgnoreMatch = function( str ){
@@ -238,17 +259,17 @@ var Settings = {
 	Extraction = (function(){
 		var lineBreakRegex = /\r\n?|\n/g;
 		
-		function Extraction( capture, ignore, regex, maxDepth, isEscapeMatch, stripEscapes, errorHandle, wordBoundary, isLastLetterWord, isFirstLetterWord, isIgnoreMatch ){
+		function Extraction( capture, ignore, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
 			
 			this.capture = capture;
 			this.ignore = ignore;
 			this.regex = regex;
 			this.wordBoundary = wordBoundary;
-			this.isEscapeMatch = isEscapeMatch;
-			this.stripEscapes = stripEscapes;
+			this.isEscapeMatch = escapeObject.isEscapeMatch;
+			this.stripEscapes = escapeObject.stripEscapes;
 			this.isIgnoreMatch = isIgnoreMatch;
-			this.isLastLetterWord = isLastLetterWord;
-			this.isFirstLetterWord = isFirstLetterWord;
+			this.isLastLetterWord = wordBoundaryObject.isLastLetterWord;
+			this.isFirstLetterWord = wordBoundaryObject.isFirstLetterWord;
 			
 			this.maxDepth = maxDepth;
 			this.errorHandle = errorHandle;
@@ -637,60 +658,47 @@ var Settings = {
 			return '';
 		};
 		
-		function Parser( captureBrackets, ignoreBrackets, opts ){
+		function assignWordBoundaryFunctions( target, source ){
+			var wordRegex = source || Settings.wordRegex,
+				wordRegexEnd = new RegExp( '(' + wordRegex + ')$' ),
+				wordRegexBegin = new RegExp( '^(' + wordRegex + ')' );
+			
+			target.isLastLetterWord = function( str ){
+				return str.match( wordRegexEnd );
+			}
+			
+			target.isFirstLetterWord = function( str ){
+				return str.match( wordRegexBegin );
+			}
+		}
+		
+		function Parser( opts ){
 			
 			var opts = typeof opts === 'object' ? opts : {},
-				regexFirst = opts.regexFirst === true,
+				regexFirst = typeof opts.regexFirst === 'boolean' ? opts.regexFirst : Settings.regexFirst,
 				wordBoundary = opts.wordBoundary === true,
-				wordRegexSource = new RegexList( opts.escape ).toString( regexFirst ),
-				wordRegex = wordRegexSource || Settings.wordRegex,
-				wordRegexEnd = new RegExp( '(' + wordRegex + ')$' ),
-				wordRegexBegin = new RegExp( '^(' + wordRegex + ')' ),
+				wordRegexSource = new RegexList( opts.wordRegex ).toString( regexFirst ),
+				wordBoundaryObject = {},
 				ignoreRegexSource = new RegexList( opts.ignore ).toString( regexFirst ),
 				ignoreRegex = buildFullRegex(ignoreRegexSource),
 				errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : Settings.errorHandle,
 				maxDepth = typeof opts.maxDepth === "number" ? opts.maxDepth : (Settings.maxDepth ? Settings.maxDepth : -1 ), //if the Settings.maxDepth = 0, then use -1 instead
-				capture = new Brackets( captureBrackets).compile( regexFirst ),
-				ignore = new Brackets( ignoreBrackets ).compile( regexFirst ),
-				ignoreCombinedSource = ignoreCombinedSource ? ('|' + ignore.combinedSource) : '',
-				allCombinedSources = capture.combinedSource + ignoreCombinedSource,
+				capture = new Brackets( opts.capture ).compile( regexFirst ),
+				ignore = new Brackets( opts.ignore ).compile( regexFirst ),
+				allCombinedSources = capture.combinedSource + (ignore.combinedSource ? ('|' + ignore.combinedSource) : ''),
 				regex = new RegExp( '(' + allCombinedSources + ')' ),
 				escapeSource = new RegexList( opts.escape ).toString( regexFirst ),
-				escapeRegexCapture = buildEscapeRegex( escapeSource ),
-				escapeRegexCount = new RegExp( escapeSource ),
-				escapeRegexStrip = buildEscapeStripRegex( escapeSource );
-			
-			function isEscapeMatch( str ){
-				var split, count,
-					match = str.match( escapeRegexCapture );
-					
-				if( !match ) return false;
+				escapeObject = {};
 				
-				split = match[0].split( escapeRegexCount ),
-				//the length of the split is the number of regex in a row
-				count = split.length-1;
-				//if count is odd, then there is an escape
-				return count%2;
-			};
-			
-			function stripEscapes( str ){
-				return str.replace( escapeRegexStrip ,"$1")
-			};
-			
+			assignWordBoundaryFunctions( wordBoundaryObject, wordRegexSource );
+			assignEscapeFunctions( escapeObject, escapeSource );
+						
 			function isIgnoreMatch( str ){
 				return str.match( ignoreRegex );
 			};
 			
-			function isLastLetterWord( str ){
-				return str.match( wordRegexEnd );
-			}
-			
-			function isFirstLetterWord( str ){
-				return str.match( wordRegexBegin );
-			}
-			
 			function newExtraction(){
-				return new Extraction( capture, ignore, regex, maxDepth, isEscapeMatch, stripEscapes, errorHandle, wordBoundary, isLastLetterWord, isFirstLetterWord, isIgnoreMatch );
+				return new Extraction( capture, ignore, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
 			}
 			
 			this.extract = function( str, count ){
@@ -811,15 +819,6 @@ function isArray( val ){
 
 function isRegExp( val ){
 	return val !== undefined && val !== null && val.constructor === RegExp;
-}
-
-//to build an escape regex
-function buildEscapeRegex( source ){
-	return source ? new RegExp("(" + source + ")+$") : null;
-}
-
-function buildEscapeStripRegex( source ){
-	return source ? new RegExp( "(?:" + source + ")([\\w\\W])", "g" ) : null;
 }
 
 //to build a full string match regex
