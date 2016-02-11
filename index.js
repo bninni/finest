@@ -12,6 +12,10 @@ Todo:
 
 	The 'nest' and 'simple' strings should also be un-escaped
 		-have unescape be an option?
+		
+	way to set default escape setting
+	
+	isLastLetterEscape should be a function to look at the entire raw content string...what if a nest returned an escape char?
 */
 
 var Settings = {
@@ -25,8 +29,10 @@ var Settings = {
 			return this.open + this.content + this.close;
 		}
 	},
-	assignEscapeFunctions = (function(){
-		//to build an escape regex
+	WordBoundaryManager = (function(){
+	
+	})(),
+	EscapeManager = (function(){
 		function buildCaptureRegex( source ){
 			return source ? new RegExp("(" + source + ")+$") : null;
 		}
@@ -36,30 +42,32 @@ var Settings = {
 		}
 		
 		//to assign escape functions to the given object
-		function assign( target, source ){
-			var captureRegex = buildCaptureRegex( source ),
-				countRegex = new RegExp( source ),
-				stripRegex = buildStripRegex( source );
-				
-			target.stripEscapes = function( str ){
-				return str.replace( stripRegex ,"$1")
-			};
-			
-			target.isEscapeMatch = function( str ){
-				var split, count,
-					match = str.match( captureRegex );
-					
-				if( !match ) return false;
-				
-				split = match[0].split( countRegex ),
-				//the length of the split is the number of regex in a row
-				count = split.length-1;
-				//if count is odd, then there is an escape
-				return count%2;
-			};
+		function EscapeManager( source ){
+			this.captureRegex = buildCaptureRegex( source ),
+			this.countRegex = new RegExp( source ),
+			this.stripRegex = buildStripRegex( source );
 		}
-
-		return assign;
+		
+		EscapeManager.prototype.strip = function( str ){
+			return str.replace( this.stripRegex, '$1' );
+		}
+		
+		EscapeManager.prototype.isMatch = function( str ){
+			var count,
+				match = str.match( this.captureRegex );
+				
+			if( !match ) return false;
+			
+			match = match[0].split( this.countRegex );
+			
+			//the length of the split is the number of regex in a row
+			count = match.length-1;
+			
+			//if count is odd, then there is an escape
+			return count%2;
+		}
+		
+		return EscapeManager;
 	})(),
 	RegexList = (function(){
 		//Characters that need to be escaped for use in RegEx
@@ -135,7 +143,7 @@ var Settings = {
 					closeRegex = buildFullRegex( closeSource ),
 					ignoreRegex = buildFullRegex( ignoreSource );
 					
-				assignEscapeFunctions( this, escapeSource );
+				this.EscapeManager = new EscapeManager( escapeSource );
 					
 				this.isOpenMatch = function( str ){
 					return str.match( openRegex );
@@ -259,14 +267,13 @@ var Settings = {
 	Extraction = (function(){
 		var lineBreakRegex = /\r\n?|\n/g;
 		
-		function Extraction( capture, except, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
+		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
 			
 			this.capture = capture;
 			this.except = except;
 			this.regex = regex;
 			this.wordBoundary = wordBoundary;
-			this.isEscapeMatch = escapeObject.isEscapeMatch;
-			this.stripEscapes = escapeObject.stripEscapes;
+			this.EscapeManager = escapeManager;
 			this.isIgnoreMatch = isIgnoreMatch;
 			this.isLastLetterWord = wordBoundaryObject.isLastLetterWord;
 			this.isFirstLetterWord = wordBoundaryObject.isFirstLetterWord;
@@ -287,8 +294,8 @@ var Settings = {
 		
 		Extraction.prototype.close = function(){
 			var nest = this.currentNest.public;
-			nest.rawContent = this.stripEscapes( nest.rawContent );
-			nest.content = this.stripEscapes( nest.content );
+			nest.rawContent = this.EscapeManager.strip( nest.rawContent );
+			nest.content = this.EscapeManager.strip( nest.content );
 		}
 		
 		//to return the given value if there is no error
@@ -505,7 +512,7 @@ var Settings = {
 			}
 			
 			this.lastEntryType = String;
-			this.endsWithEscape = this.isEscapeMatch( str );
+			this.endsWithEscape = this.EscapeManager.isMatch( str );
 			this.lastLetterIsWord = this.isLastLetterWord( str );
 		}
 
@@ -526,7 +533,7 @@ var Settings = {
 				this.doInclude = doInclude;
 				this.maxDepth = extraction.maxDepth;
 				this.isIgnoreMatch = extraction.isIgnoreMatch;
-				this.isEscapeMatch = extraction.isEscapeMatch;
+				this.EscapeManager = extraction.EscapeManager;
 				this.isLastLetterWord = extraction.isLastLetterWord;
 				
 				//initialize other properties
@@ -580,8 +587,7 @@ var Settings = {
 				this.startRow = extraction.row;
 				this.startCol = extraction.col;
 				this.isLastLetterWord = extraction.isLastLetterWord;
-				this.isEscapeMatch = bracket.isEscapeMatch;
-				this.stripEscapes = bracket.stripEscapes;
+				this.EscapeManager = bracket.EscapeManager;
 				this.isIgnoreMatch = bracket.isIgnoreMatch;
 				this.isCloseMatch = bracket.isCloseMatch;
 				this.handle = handle.bind(nest);
@@ -629,8 +635,8 @@ var Settings = {
 					fullString, length;
 				
 				//remove the escape chars
-				nest.rawContent = this.stripEscapes( nest.rawContent );
-				nest.content = this.stripEscapes( nest.content );
+				nest.rawContent = this.EscapeManager.strip( nest.rawContent );
+				nest.content = this.EscapeManager.strip( nest.content );
 				
 				fullString = nest.open + nest.rawContent + str;
 				length = fullString.length;
@@ -688,18 +694,16 @@ var Settings = {
 				except = new Brackets( opts.except ).compile( regexFirst ),
 				allCombinedSources = capture.combinedSource + (except.combinedSource ? ('|' + except.combinedSource) : ''),
 				regex = new RegExp( '(' + allCombinedSources + ')' ),
-				escapeSource = new RegexList( opts.escape ).toString( regexFirst ),
-				escapeObject = {};
+				escapeManager = new EscapeManager( new RegexList( opts.escape ).toString( regexFirst ) );
 				
 			assignWordBoundaryFunctions( wordBoundaryObject, wordRegexSource );
-			assignEscapeFunctions( escapeObject, escapeSource );
 						
 			function isIgnoreMatch( str ){
 				return str.match( ignoreRegex );
 			};
 			
 			function newExtraction(){
-				return new Extraction( capture, except, regex, maxDepth, escapeObject, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
+				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
 			}
 			
 			this.extract = function( str, count ){
