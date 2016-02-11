@@ -2,12 +2,10 @@
 Copyright Brian Ninni 2016
 
 Changes:
-	Fixed bug in the Extraction.extract
-	nest.original -> nest.rawContent
-	CombinedBrackets now has:
-		-isOpenMatch
-		-isCloseMatch
-		-getOpenMatch
+	-added custom error function
+	-added row and col counters
+	-added in default css and html ignores
+	-Removed BracketsList and CombinedBrackets, now there is just Brackets and Bracket objects
 
 Todo:
 	Tests, Readme, Comments
@@ -15,11 +13,7 @@ Todo:
 			-pen will match before penny
 		-make note that if a segment matches multiple open brackets, the first one listed will be used
 			-this is because the 'escapeRegex' is specific to a bracket
-		
-	The public Brackets object should have no properties, it should just map to an internal object
-	
-	Merge CombinedBrackets and BracketList??
-	
+
 	Parser options:
 		-wordBoundary
 			-don't open the nest if the first char of open string and the last char of the current content both match \w
@@ -188,74 +182,144 @@ var RegexList = (function(){
 
 })();
 
-var BracketsList = (function(){
-	function BracketsList( data ){
-		var brackets = [];
-		this.brackets = brackets;
-		
-		data.mates.forEach(function( mate ){
-			var newData = {
-				open : mate[0],
-				close : mate[1],
-				handle : data.handle,
-				escape : data.escape,
-				maxDepth : data.maxDepth,
-			}
-
-			brackets.push( new Brackets( newData ) );
-		});
-		
-	}
-	
-	return BracketsList;
-	
-})();
-
 var Brackets = (function(){
 
-	
-	//TODO: throw error if no 'open'??
-	//TODO: accepted just a string or just an array?
-	function Brackets( data ){
+	function Bracket( data ){
 		var data = typeof data === "object" ? data : {},
 			open = data.open,
 			close = data.close,
-			escape = data.escape;
-		
-		if( 'mates' in data && isArray( data.mates ) ) return new BracketsList( data );
-		
-		if( 'mate' in data && isArray( data.mate ) ){
-			open = data.mate[0];
-			close = data.mate[1];
-		}
-		
+			escape = data.escape,
+			maxDepth = typeof data.maxDepth === "number" ? data.maxDepth : -1,
+			handle = typeof data.handle === "function" ? data.handle : defaultHandle;
+			
 		open =  new RegexList( open );
 		//TODO: if( !close ) close = getMate( open );
 		close = new RegexList( close );
 		escape = new RegexList( escape );
-
-		this.maxDepth = typeof data.maxDepth === "number" ? data.maxDepth : -1;
-		this.handle = typeof data.handle === "function" ? data.handle : defaultHandle;
 			
-		this.build = function( regexFirst ){
+		this.compile = function( regexFirst ){
 			var openSource = open.toString( regexFirst ),
 				closeSource = close.toString( regexFirst ),
-				escapeSource = escape.toString( regexFirst );
+				escapeSource = escape.toString( regexFirst ),
+				openRegex = new RegExp( '^(' +  openSource + ')$' ),
+				closeRegex = new RegExp( '^(' +  closeSource + ')$' ),					
+				escapeRegex = buildEscapeRegex( escapeSource );
 			
-			this.openRegex = new RegExp( '^(' +  openSource + ')$' );
-			this.escapeRegex = buildEscapeRegex( escapeSource );
-			this.closeRegex = new RegExp( '^(' +  closeSource + ')$' );
+			this.isOpenMatch = function( str ){
+				return str.match( openRegex );
+			};
+			
+			this.isCloseMatch = function( str ){
+				return str.match( closeRegex );
+			};
+			
+			this.isEscapeMatch = function( str ){
+				return str.match( escapeRegex );
+			}
 			this.openSource = openSource;
 			this.closeSource = closeSource;
+			this.handle = handle;
+			this.maxDepth = maxDepth;
 		}
 	}
 	
-	Brackets.prototype.isOpenMatch = function( str ){
-		return str.match( this.openRegex );
-	}
+	//TODO: throw error if no 'open'??
+	//TODO: accept just a string or just an array?
+	function Brackets( obj ){
+		var data = typeof obj === "object" ? obj : {},
+			escape = data.escape,
+			maxDepth = data.maxDepth,
+			handle = data.handle,
+			content = [];
+		
+		//to add a bracket to the content
+		function add( data ){			
+			data.handle = handle;
+			data.escape = escape;
+			data.maxDepth = maxDepth;
+			
+			content.push( new Bracket(data) );
+		}
+		
+		function addMate( mate ){
+			if( isArray( mate ) ) add({
+				open : mate[0],
+				close : mate[1],
+			});
+		}
+		
+		function addBracket( bracket ){
+			if( bracket instanceof Brackets ) content.push(bracket);
+		}
+		
+		//if its a single Brackets object, then return that
+		if( obj instanceof Brackets ) return obj;
+		
+		//if its an array, then add each to the content
+		if( isArray( obj ) ) obj.forEach( addBracket );
+		else if( 'mates' in data && isArray( data.mates ) ) data.mates.forEach( addMate );
+		else if( 'mate' in data ) addMate( data.mate );
+		else add( data );
+		
+		this.compile = function( regexFirst ){
+			
+			var openSources = [],
+				openSource = '',
+				openRegex = null,
+				closeSources = [],
+				closeSource = '',
+				closeRegex = null,
+				combinedSource = '';
+			
+			content.forEach(function( bracket ){				
+				bracket.compile( regexFirst );
+				openSources.push( bracket.openSource );
+				closeSources.push( bracket.closeSource );
+			});
+			
+			//if Bracket data exists, update the data
+			if( content.length ){
+				openSource = openSources.join('|');
+				openRegex = new RegExp('^(?:' + openSource + ')$');
+				closeSource = closeSources.join('|');
+				closeRegex = new RegExp('^(?:' + closeSource + ')$');
+				combinedSource = openSources.concat( closeSources ).join('|');
+			}
+			
+			this.openSource = openSource;
+			this.closeSource = closeSource;
+			this.combinedSource = combinedSource;
+			
+			this.isOpenMatch = function( str ){
+				return str.match( openRegex );
+			}
+			
+			this.isCloseMatch = function( str ){
+				return str.match( closeRegex );
+			}
 	
-	Brackets.prototype.isCloseMatch = function( str ){
-		return str.match( this.closeRegex );
+			this.getFirstOpenMatch = function(str){
+				var i, l = content.length,
+					match = null;
+					
+				for(i=0;i<l;i++){
+					if( content[i].isOpenMatch( str ) ){
+						match = content[i];
+						break;
+					}
+				}
+				
+				//if the match is a Brackets, then get the specific Bracket
+				if( match instanceof Brackets ) return match.getFirstOpenMatch( str );
+				
+				return match;
+			};
+			
+			return this;
+		}
+		
+		//initialize compilation with regexFirst = false
+		this.compile( false );
 	}
 	
 	return Brackets;
@@ -263,27 +327,36 @@ var Brackets = (function(){
 
 var Extraction = (function(){
 
-	function Extraction( capture, ignore, regex, maxDepth, escapeRegex ){
+	function Extraction( capture, ignore, regex, maxDepth, escapeRegex, errorHandle ){
 		this.capture = capture;
 		this.ignore = ignore;
 		this.regex = regex;
-		this.escapeRegex = escapeRegex;
+		
+		this.isEscapeMatch = function( str ){
+			return str.match( escapeRegex );
+		};
+		
 		this.maxDepth = maxDepth;
+		this.errorHandle = errorHandle;
 		//TODO: error if maxDepth = 0?
 	}
 	
 	Extraction.prototype.init = function( str, doInclude ){
 		this.strings = str.split( this.regex );
+		this.row = 0;
+		this.col = 0;
 		this.index = 0;
-		this.currentNest = this.baseNest = new Nest.Base( doInclude, this );
-		return this.baseNest.public;
+		this.currentNest = new Nest.Base( doInclude, this );
+		return this.currentNest.public;
 	}
 	
 	//to return the given value if there is no error
 	Extraction.prototype.returnIfNoError = function( val ){
-		//if there is still a result, then there was an error
-		//TODO : separate way to handle errors?
-		if( this.currentNest.parent ) throw new Error("Unable to parse. Unclosed Bracket detected");
+		//if the current nest is not the base nest, then there was an error
+		if( this.currentNest.parent ){
+			this.errorHandle(new Error('No Close Bracket detected for Open Bracket of \'' + this.currentNest.public.open + '\' found at index ' + this.currentNest.startIndex + ' (row ' + this.currentNest.startRow + ', col ' + this.currentNest.startCol + ')' ));
+			return null;
+		}
 		
 		return val;
 	}
@@ -293,7 +366,7 @@ var Extraction = (function(){
 		var self = this,
 			baseNest = this.init( str, false );
 		this.handleAllStringsUntil(function(){
-			return self.currentNest === self.baseNest && baseNest.matches.length === count;
+			return self.currentNest.public === baseNest && baseNest.matches.length === count;
 		});
 		return this.returnIfNoError( baseNest.matches );
 	}
@@ -329,7 +402,22 @@ var Extraction = (function(){
 		var str = popFirst( this.strings );
 		if( !str ) return;
 		this.handleString( str );
+		this.increaseCounters( str );
+	}
+	
+	var lineBreakRegex = /\r\n?|\n/g;
+	
+	Extraction.prototype.increaseCounters = function( str ){
+		var match = str.split( lineBreakRegex ),
+			//the number of linebreaks is one less than the size of the array
+			numOfBreaks = match.length-1;
+			
 		this.index += str.length;
+		this.row += numOfBreaks;
+		//reset col index if there is a line break
+		if( numOfBreaks ) this.col = 0;
+		//increase by the length of the last string in the array
+		this.col += match.pop().length;
 	}
 
 	Extraction.prototype.handleString = function( str ){
@@ -359,12 +447,12 @@ var Extraction = (function(){
 	}
 
 	Extraction.prototype.openNest = function( str, doIgnore ){
-		var bracket = (doIgnore ? this.ignore : this.capture).getOpenMatch( str ),
+		var bracket = (doIgnore ? this.ignore : this.capture).getFirstOpenMatch( str ),
 			handle = this.nestHandle ? this.nestHandle : bracket.handle;
 			
 		//TODO: throw error if bracket === null?
 			
-		this.currentNest = new Nest.Wrapper( str, this.currentNest, bracket, handle, this.index, doIgnore );
+		this.currentNest = new Nest.Wrapper( str, this.currentNest, bracket, handle, this, doIgnore );
 	}
 
 	//to add text to the current result if there is one
@@ -427,7 +515,7 @@ var Nest = new function(){
 		}
 		
 		this.lastEntryType = String;
-		this.endsWithEscape = str.match( this.escapeRegex );
+		this.endsWithEscape = this.isEscapeMatch( str );
 	}
 
 	function addOriginalString( str ){
@@ -440,12 +528,13 @@ var Nest = new function(){
 	
 	this.Base = (function(){
 		function BaseNest( doInclude, extraction ){
+						
 			this.public = new Nest();
 			
 			//set some properties from the input
 			this.doInclude = doInclude;
-			this.escapeRegex = extraction.escapeRegex,
 			this.maxDepth = extraction.maxDepth;
+			this.isEscapeMatch = extraction.isEscapeMatch;
 			
 			//initialize other properties
 			this.startIndex = 0;
@@ -485,7 +574,7 @@ var Nest = new function(){
 	})();
 	
 	this.Wrapper = (function(){
-		function NestWrapper( str, parent, bracket, handle, startIndex, doIgnore ){
+		function NestWrapper( str, parent, bracket, handle, extraction, doIgnore ){
 			//ignore if the parent is ignored as well
 			var doIgnore = doIgnore || parent.doIgnore,
 			//use the lowest non-negative value for the max depth
@@ -494,9 +583,11 @@ var Nest = new function(){
 			
 			//set some properties from the input
 			this.doIgnore = doIgnore;
-			this.startIndex = startIndex;
-			this.escapeRegex = bracket.escapeRegex;
-			this.closeRegex = bracket.closeRegex;
+			this.startIndex = extraction.index;
+			this.startRow = extraction.row;
+			this.startCol = extraction.col;
+			this.isEscapeMatch = bracket.isEscapeMatch;
+			this.isCloseMatch = bracket.isCloseMatch;
 			this.handle = handle.bind(nest);
 			this.maxDepth = maxDepth;
 			
@@ -561,66 +652,6 @@ var Nest = new function(){
 	
 };
 
-var CombinedBrackets = (function(){
-	function CombinedBrackets( brackets, regexFirst ){
-
-		this.regexFirst = regexFirst;
-	
-		this.openSources = [];
-		this.closeSources = [];
-		this.combinedSourcesArray = [];
-		
-		this.brackets = [];
-		this.openRegex = null;
-		this.closeRegex = null;
-		this.combinedSources = null;
-		
-		if( isArray( brackets ) ) brackets.forEach( this.add, this );
-		else this.add( brackets );
-		
-		if( this.brackets.length ){
-			this.openRegex = new RegExp('^(?:' + this.openSources.join('|') + ')$');
-			this.closeRegex = new RegExp('^(?:' + this.closeSources.join('|') + ')$');
-			this.combinedSources = this.combinedSourcesArray.join('|');
-		}
-	}
-	
-	CombinedBrackets.prototype.add = function( bracket ){
-		
-		if( bracket instanceof BracketsList ) return bracket.brackets.forEach( this.add, this );
-		
-		if( !(bracket instanceof Brackets) ) return;
-		
-		bracket.build( this.regexFirst );
-		
-		this.brackets.push( bracket );
-		this.openSources.push( '(' + bracket.openSource + ')' );
-		this.closeSources.push( '(' + bracket.closeSource + ')' );
-		this.combinedSourcesArray.push( '(?:' + bracket.openSource + '|' + bracket.closeSource + ')' );
-	}
-	
-	CombinedBrackets.prototype.isOpenMatch = function( str ){
-		return str.match( this.openRegex );
-	}
-	
-	CombinedBrackets.prototype.isCloseMatch = function( str ){
-		return str.match( this.openRegex );
-	}
-	
-	CombinedBrackets.prototype.getOpenMatch = function( str ){
-		var i,
-			arr = this.brackets;
-			l = arr.length;
-		
-		for(i=0;i<l;i++) if( arr[i].isOpenMatch( str ) ) return arr[i];
-		
-		return null;
-	}
-	
-	return CombinedBrackets;
-	
-})();
-
 //TODO: throw error if no capture brackets??
 var Parser = (function(){
 
@@ -628,20 +659,27 @@ var Parser = (function(){
 		return '';
 	};
 	
+	function defaultErrorHandle( err ){
+		console.log( err );
+	}
+	
 	function Parser( captureBrackets, ignoreBrackets, opts ){
 		
 		var opts = typeof opts === 'object' ? opts : {},
-			regexFirst = opts.regexFirst,
+			regexFirst = opts.regexFirst === true,
+			errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : defaultErrorHandle,
 			maxDepth = typeof opts.maxDepth === "number" ? opts.maxDepth : -1,
-			capture = new CombinedBrackets( captureBrackets, regexFirst ),
-			ignore = new CombinedBrackets( ignoreBrackets, regexFirst ),
-			allCombinedSources = capture.combinedSources + (ignore.combinedSources ? ('|' + ignore.combinedSources) : ''),
+			capture = new Brackets( captureBrackets).compile( regexFirst ),
+			ignore = new Brackets( ignoreBrackets ).compile( regexFirst ),
+			allCombinedSources = capture.combinedSource + (ignore.combinedSource ? ('|' + ignore.combinedSource) : ''),
 			regex = new RegExp( '(' + allCombinedSources + ')' ),
 			escapeSource = new RegexList( opts.escape ).toString( regexFirst ),
 			escapeRegex = buildEscapeRegex( escapeSource );
 		
+		//TODO: error if capture combined sources is empty?? or at least no open source and no close source?
+		
 		function newExtraction(){
-			return new Extraction( capture, ignore, regex, maxDepth, escapeRegex );
+			return new Extraction( capture, ignore, regex, maxDepth, escapeRegex, errorHandle );
 		}
 		
 		this.extract = function( str, count ){
@@ -673,6 +711,7 @@ var Parser = (function(){
 var JS = {
 	RegExp : new Brackets({
 		mate : ['/','/'],
+		maxDepth : 0,
 		escape : '\\'
 	}),
 	Strings : new Brackets({
@@ -693,6 +732,36 @@ var JS = {
 	})
 };
 
+var CSS = {
+	Comments : new Brackets({
+		mate : ['/*','*/'],
+		maxDepth : 0,
+	}),
+	Strings : new Brackets({
+		mates : [
+			['"','"'],
+			['\'','\''],
+		],
+		maxDepth : 0,
+		escape : '\\'
+	}),
+}
+
+var HTML = {
+	Comments : new Brackets({
+		mate : ['<!--','-->'],
+		maxDepth : 0,
+	}),
+	Strings : new Brackets({
+		mates : [
+			['"','"'],
+			['\'','\''],
+		],
+		maxDepth : 0,
+		escape : '\\'
+	}),
+}
+
 //to change all capture groups to non-capture groups in a regex source string
 function removeCaptureGroups( str ){
 	var Parens = new Brackets({
@@ -711,7 +780,7 @@ function removeCaptureGroups( str ){
 		});
 	
 	return new Parser( Parens, Bracks,{
-		base : JS.RegExp
+		escape : '\\'
 	}).handle( str );
 }
 
@@ -719,5 +788,6 @@ module.exports = {
 	Parser : Parser,
 	Brackets : Brackets,
 	JS : JS,
-	remove : removeCaptureGroups
+	CSS : CSS,
+	HTML : HTML,
 };
