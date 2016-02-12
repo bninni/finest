@@ -13,13 +13,19 @@ Todo:
 	The 'nest' and 'simple' strings should also be un-escaped
 		-have unescape be an option?
 		
-	way to set default escape setting
+	Settings:
+		-wordBoundary
+		-escape
+	
+	Should wordBoundary be assigned to a bracket?
+	Should wordBoundary succeed if the boundary is another open/close bracket?
 	
 	isLastLetterEscape should be a function to look at the entire raw content string...what if a nest returned an escape char?
 */
 
 var Settings = {
 		regexFirst : false,
+		wordBoundary : false,
 		maxDepth : -1,
 		wordRegex : '\\w',
 		errorHandle : function( err ){
@@ -30,7 +36,32 @@ var Settings = {
 		}
 	},
 	WordBoundaryManager = (function(){
-	
+		function WordBoundaryManager( useWordBoundary, source ){
+			source = source || Settings.wordRegex;
+		
+			this.useWordBoundary = typeof useWordBoundary === 'boolean' ? useWordBoundary : Settings.wordBoundary;
+			this.endRegex = new RegExp( '(' + source + ')$' );
+			this.startRegex = new RegExp( '^(' + source + ')' );
+		}
+		
+		WordBoundaryManager.prototype.isEndMatch = function( str ){
+			return str.match( this.endRegex );
+		}
+		
+		WordBoundaryManager.prototype.isStartMatch = function( str ){
+			return str.match( this.startRegex );
+		}
+		
+		WordBoundaryManager.prototype.isValid = function( prevStr, str, nextStr ){
+			return !(this.useWordBoundary && 
+				(
+					( prevStr && this.isEndMatch( prevStr ) && this.isStartMatch( str ) ) ||
+					( this.isEndMatch( str ) && nextStr && this.isStartMatch( nextStr ) )
+				)
+			);
+		}
+		
+		return WordBoundaryManager;
 	})(),
 	EscapeManager = (function(){
 		function buildCaptureRegex( source ){
@@ -267,17 +298,14 @@ var Settings = {
 	Extraction = (function(){
 		var lineBreakRegex = /\r\n?|\n/g;
 		
-		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch ){
+		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, isIgnoreMatch ){
 			
 			this.capture = capture;
 			this.except = except;
 			this.regex = regex;
-			this.wordBoundary = wordBoundary;
+			this.WordBoundaryManager = wordBoundaryManager;
 			this.EscapeManager = escapeManager;
-			this.isIgnoreMatch = isIgnoreMatch;
-			this.isLastLetterWord = wordBoundaryObject.isLastLetterWord;
-			this.isFirstLetterWord = wordBoundaryObject.isFirstLetterWord;
-			
+			this.isIgnoreMatch = isIgnoreMatch;			
 			this.maxDepth = maxDepth;
 			this.errorHandle = errorHandle;
 		}
@@ -401,8 +429,8 @@ var Settings = {
 			var bracket = (doIgnore ? this.except : this.capture).getFirstOpenMatch( str ),
 				handle = this.nestHandle ? this.nestHandle : bracket.handle;
 				
-			//if word boundary is set to true and its two consecutive word characters, then just add the string
-			if( this.hasNoWordBoundary( str ) ) return this.addString( str );
+			//if it is not valid according to the word boundary, then just add the string
+			if( !this.isValid( str ) ) return this.addString( str );
 				
 			this.currentNest = new Nest.Wrapper( str, this.currentNest, bracket, handle, this, doIgnore );
 		}
@@ -413,26 +441,20 @@ var Settings = {
 		}
 		
 		Extraction.prototype.handleUnmatchedClose = function( str ){
-			//if word boundary is set to true and its two consecutive word characters, then just add the string
-			if( !this.hasNoWordBoundary( str ) ) this.errorHandle(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
+			//if it is valid according to the word boundary manager, then produce an error
+			if( this.isValid( str ) ) this.errorHandle(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
 			
 			this.addString( str );
 		}
-		
-		//to see if the given string fails the word boundary test
-		Extraction.prototype.hasNoWordBoundary = function( str ){
-			return (this.wordBoundary && 
-				(
-					( this.currentNest.lastLetterIsWord && this.isFirstLetterWord( str ) ) ||
-					( this.isLastLetterWord( str ) && this.nextString && this.isFirstLetterWord( this.nextString ) )
-				)
-			);
-		}
 
+		Extraction.prototype.isValid = function( str ){
+			return this.WordBoundaryManager.isValid( this.currentNest.public.content, str, this.nextString );
+		}
+		
 		Extraction.prototype.closeNest = function( str ){
 			
-			//just add the string if there is a no word boundary
-			if( this.hasNoWordBoundary( str ) ) return this.addString( str );
+			//if it is not valid according to the word boundary manager, then just add the string
+			if( !this.isValid( str ) ) return this.addString( str );
 				
 			this.currentNest.close( str );
 			this.currentNest = this.currentNest.parent;
@@ -513,7 +535,6 @@ var Settings = {
 			
 			this.lastEntryType = String;
 			this.endsWithEscape = this.EscapeManager.isMatch( str );
-			this.lastLetterIsWord = this.isLastLetterWord( str );
 		}
 
 		function addOriginalString( str ){
@@ -534,7 +555,6 @@ var Settings = {
 				this.maxDepth = extraction.maxDepth;
 				this.isIgnoreMatch = extraction.isIgnoreMatch;
 				this.EscapeManager = extraction.EscapeManager;
-				this.isLastLetterWord = extraction.isLastLetterWord;
 				
 				//initialize other properties
 				this.startIndex = 0;
@@ -586,7 +606,6 @@ var Settings = {
 				this.startIndex = extraction.index;
 				this.startRow = extraction.row;
 				this.startCol = extraction.col;
-				this.isLastLetterWord = extraction.isLastLetterWord;
 				this.EscapeManager = bracket.EscapeManager;
 				this.isIgnoreMatch = bracket.isIgnoreMatch;
 				this.isCloseMatch = bracket.isCloseMatch;
@@ -683,9 +702,7 @@ var Settings = {
 			
 			var opts = typeof opts === 'object' ? opts : {},
 				regexFirst = typeof opts.regexFirst === 'boolean' ? opts.regexFirst : Settings.regexFirst,
-				wordBoundary = opts.wordBoundary === true,
-				wordRegexSource = new RegexList( opts.wordRegex ).toString( regexFirst ),
-				wordBoundaryObject = {},
+				wordBoundaryManager = new WordBoundaryManager( opts.wordBoundary, new RegexList( opts.wordRegex ).toString( regexFirst ) ),
 				ignoreRegexSource = new RegexList( opts.ignore ).toString( regexFirst ),
 				ignoreRegex = buildFullRegex(ignoreRegexSource),
 				errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : Settings.errorHandle,
@@ -695,15 +712,13 @@ var Settings = {
 				allCombinedSources = capture.combinedSource + (except.combinedSource ? ('|' + except.combinedSource) : ''),
 				regex = new RegExp( '(' + allCombinedSources + ')' ),
 				escapeManager = new EscapeManager( new RegexList( opts.escape ).toString( regexFirst ) );
-				
-			assignWordBoundaryFunctions( wordBoundaryObject, wordRegexSource );
-						
+										
 			function isIgnoreMatch( str ){
 				return str.match( ignoreRegex );
 			};
 			
 			function newExtraction(){
-				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundary, wordBoundaryObject, isIgnoreMatch );
+				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, isIgnoreMatch );
 			}
 			
 			this.extract = function( str, count ){
