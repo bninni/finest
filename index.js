@@ -10,12 +10,18 @@ Todo:
 		-note maxDepth=0 wont work for parser
 		-note that maxDepth will ignore any nested open brackets, so it might come across and use the wrong close bracket
 		
+	-fix close.isMatch and ignore.isMatch
+	
 	Settings:
 		-wordBoundary
 		-escape
 
+	raw, original, and handled should each have its own tree, simple, and content??
+		
 	What to do if open/close string has escape inside it?
 		
+	Should 'ignore' or 'escape' cascade to child nests??
+	
 	Should wordBoundary be assigned to a bracket?
 	Should wordBoundary succeed if the boundary is another open/close bracket?
 	
@@ -26,6 +32,7 @@ var Settings = {
 		wordBoundary : false,
 		maxDepth : -1,
 		wordRegex : '\\w',
+		escape : '',
 		errorHandle : function( err ){
 			throw err;
 		},
@@ -60,6 +67,19 @@ var Settings = {
 		}
 		
 		return WordBoundaryManager;
+	})(),
+	RegexMatcher = (function(){
+		function RegexMatcher( source ){
+			this.source = source;
+			this.regex = buildFullRegex( source );
+		}
+		
+		RegexMatcher.prototype.isMatch = function( str ){
+			return str.match( this.regex );
+		}
+		
+		return RegexMatcher;
+		
 	})(),
 	EscapeManager = (function(){
 		function buildCaptureRegex( source ){
@@ -164,30 +184,11 @@ var Settings = {
 			ignore = new RegexList( ignore );
 			
 			this.compile = function( regexFirst ){
-				var openSource = open.toString( regexFirst ),
-					closeSource = close.toString( regexFirst ),
-					escapeSource = escape.toString( regexFirst ),
-					ignoreSource = ignore.toString( regexFirst ),
-					openRegex = buildFullRegex( openSource ),
-					closeRegex = buildFullRegex( closeSource ),
-					ignoreRegex = buildFullRegex( ignoreSource );
 					
-				this.EscapeManager = new EscapeManager( escapeSource );
-					
-				this.isOpenMatch = function( str ){
-					return str.match( openRegex );
-				};
-				
-				this.isCloseMatch = function( str ){
-					return str.match( closeRegex );
-				};
-				
-				this.isIgnoreMatch = function( str ){
-					return str.match( ignoreRegex );
-				};
-				
-				this.openSource = openSource;
-				this.closeSource = closeSource;
+				this.EscapeManager = new EscapeManager( escape.toString( regexFirst ) );
+				this.open = new RegexMatcher( open.toString( regexFirst ) );
+				this.close = new RegexMatcher( close.toString( regexFirst ) );
+				this.ignore = new RegexMatcher( ignore.toString( regexFirst ) );
 				this.handle = handle;
 				this.maxDepth = maxDepth;
 			}
@@ -233,46 +234,24 @@ var Settings = {
 			this.compile = function( regexFirst ){
 				
 				var openSources = [],
-					openSource = '',
-					openRegex = null,
-					closeSources = [],
-					closeSource = '',
-					closeRegex = null,
-					combinedSource = '';
+					closeSources = [];
 				
 				content.forEach(function( bracket ){				
 					bracket.compile( regexFirst );
-					openSources.push( bracket.openSource );
-					closeSources.push( bracket.closeSource );
+					openSources.push( bracket.open.source );
+					closeSources.push( bracket.close.source );
 				});
 				
-				//if Bracket data exists, update the data
-				if( content.length ){
-					openSource = openSources.join('|');
-					openRegex = buildFullRegex( openSource );
-					closeSource = closeSources.join('|');
-					closeRegex = buildFullRegex( closeSource );
-					combinedSource = (openSource && closeSource) ? openSources.concat( closeSources ).join('|') : '';
-				}
+				this.open = new RegexMatcher( openSources.join('|') );
+				this.close = new RegexMatcher( closeSources.join('|') );
+				this.combinedSources = (this.open.source && this.close.source) ? this.open.source + '|' + this.close.source : '';
 				
-				this.openSource = openSource;
-				this.closeSource = closeSource;
-				this.combinedSource = combinedSource;
-				
-				this.isOpenMatch = function( str ){
-					return str.match( openRegex );
-				}
-				
-				this.isCloseMatch = function( str ){
-					return str.match( closeRegex );
-				}
-		
 				this.getFirstOpenMatch = function(str){
 					var i, l = content.length,
 						match = null;
 						
 					for(i=0;i<l;i++){
-						if( content[i].isOpenMatch( str ) ){
+						if( content[i].open.isMatch( str ) ){
 							match = content[i];
 							break;
 						}
@@ -296,14 +275,14 @@ var Settings = {
 	Extraction = (function(){
 		var lineBreakRegex = /\r\n?|\n/g;
 		
-		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, isIgnoreMatch ){
+		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, ignore ){
 			
 			this.capture = capture;
 			this.except = except;
 			this.regex = regex;
 			this.WordBoundaryManager = wordBoundaryManager;
 			this.EscapeManager = escapeManager;
-			this.isIgnoreMatch = isIgnoreMatch;			
+			this.ignore = ignore;			
 			this.maxDepth = maxDepth;
 			this.errorHandle = errorHandle;
 		}
@@ -406,13 +385,13 @@ var Settings = {
 			if( this.currentNest.atMaxDepth ) return this.addString( str );
 			
 			//if it matches an open Regex:
-			if( this.capture.isOpenMatch( str ) ) return this.openNest( str, false );
+			if( this.capture.open.isMatch( str ) ) return this.openNest( str, false );
 			
 			//if it matches an escape open regex, then set escaped
-			if( this.except.isOpenMatch( str ) ) return this.openNest( str, true );
+			if( this.except.open.isMatch( str ) ) return this.openNest( str, true );
 			
 			//if it matches any close Regex:
-			if( this.capture.isCloseMatch( str ) || this.except.isCloseMatch( str ) ) return this.handleUnmatchedClose( str );
+			if( this.capture.close.isMatch( str ) || this.except.close.isMatch( str ) ) return this.handleUnmatchedClose( str );
 			
 			this.addString( str );
 		}
@@ -440,7 +419,7 @@ var Settings = {
 		}
 
 		Extraction.prototype.isValid = function( str ){
-			return this.WordBoundaryManager.isValid( this.currentNest.public.content, str, this.nextString );
+			return this.WordBoundaryManager.isValid( this.currentNest.currentStringSegment, str, this.nextString );
 		}
 		
 		Extraction.prototype.closeNest = function( str ){
@@ -551,7 +530,9 @@ var Settings = {
 				//set some properties from the input
 				this.doInclude = doInclude;
 				this.maxDepth = extraction.maxDepth;
-				this.isIgnoreMatch = extraction.isIgnoreMatch;
+				this.isIgnoreMatch = function( str ){
+					return extraction.ignore.isMatch( str );
+				}
 				this.EscapeManager = extraction.EscapeManager;
 				
 				//initialize other properties
@@ -560,7 +541,6 @@ var Settings = {
 				this.atMaxDepth = false;
 				this.endsWithEscape = false;
 				this.lastLetterIsWord = false;
-				this.lastEntryType = null;
 				this.currentStringSegment = '';
 			}
 			
@@ -608,8 +588,12 @@ var Settings = {
 				this.startRow = extraction.row;
 				this.startCol = extraction.col;
 				this.EscapeManager = bracket.EscapeManager;
-				this.isIgnoreMatch = bracket.isIgnoreMatch;
-				this.isCloseMatch = bracket.isCloseMatch;
+				this.isIgnoreMatch = function(str){
+					return bracket.ignore.isMatch(str);
+				};
+				this.isCloseMatch = function(str){
+					return bracket.close.isMatch(str);
+				};
 				this.handle = handle.bind(nest);
 				this.maxDepth = maxDepth;
 				
@@ -617,7 +601,6 @@ var Settings = {
 				this.atMaxDepth = maxDepth === 0;
 				this.endsWithEscape = false;
 				this.lastLetterIsWord = false;
-				this.lastEntryType = null;
 				this.currentStringSegment = '';
 					
 				//set the open string
@@ -648,11 +631,7 @@ var Settings = {
 				
 				this.parent.addToChildNest( child, false );
 			};
-			
-			NestWrapper.prototype.isCloseMatch = function( str ){
-				return str.match( this.closeRegex );
-			};
-			
+						
 			NestWrapper.prototype.close = function( str ){
 				var nest = this.public,
 					fullString, length;
@@ -707,22 +686,16 @@ var Settings = {
 			var opts = typeof opts === 'object' ? opts : {},
 				regexFirst = typeof opts.regexFirst === 'boolean' ? opts.regexFirst : Settings.regexFirst,
 				wordBoundaryManager = new WordBoundaryManager( opts.wordBoundary, new RegexList( opts.wordRegex ).toString( regexFirst ) ),
-				ignoreRegexSource = new RegexList( opts.ignore ).toString( regexFirst ),
-				ignoreRegex = buildFullRegex(ignoreRegexSource),
+				ignore = new RegexMatcher( new RegexList( opts.ignore ).toString( regexFirst ) ),
 				errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : Settings.errorHandle,
 				maxDepth = typeof opts.maxDepth === "number" ? opts.maxDepth : (Settings.maxDepth ? Settings.maxDepth : -1 ), //if the Settings.maxDepth = 0, then use -1 instead
 				capture = new Brackets( opts.capture ).compile( regexFirst ),
 				except = new Brackets( opts.except ).compile( regexFirst ),
-				allCombinedSources = capture.combinedSource + (except.combinedSource ? ('|' + except.combinedSource) : ''),
-				regex = new RegExp( '(' + allCombinedSources + ')' ),
+				regex = new RegExp( '(' + capture.combinedSources + (except.combinedSources ? ('|' + except.combinedSources) : '') + ')' ),
 				escapeManager = new EscapeManager( new RegexList( opts.escape ).toString( regexFirst ) );
-										
-			function isIgnoreMatch( str ){
-				return str.match( ignoreRegex );
-			};
-			
+														
 			function newExtraction(){
-				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, isIgnoreMatch );
+				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, ignore );
 			}
 			
 			this.extract = function( str, count ){
