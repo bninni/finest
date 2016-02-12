@@ -9,18 +9,16 @@ Todo:
 			-this is because the 'escapeRegex' is specific to a bracket
 		-note maxDepth=0 wont work for parser
 		-note that maxDepth will ignore any nested open brackets, so it might come across and use the wrong close bracket
-
-	The 'nest' and 'simple' strings should also be un-escaped
-		-have unescape be an option?
 		
 	Settings:
 		-wordBoundary
 		-escape
-	
+
+	What to do if open/close string has escape inside it?
+		
 	Should wordBoundary be assigned to a bracket?
 	Should wordBoundary succeed if the boundary is another open/close bracket?
 	
-	isLastLetterEscape should be a function to look at the entire raw content string...what if a nest returned an escape char?
 */
 
 var Settings = {
@@ -319,13 +317,7 @@ var Settings = {
 			this.currentNest = new Nest.Base( doInclude, this );
 			return this.currentNest.public;
 		}
-		
-		Extraction.prototype.close = function(){
-			var nest = this.currentNest.public;
-			nest.rawContent = this.EscapeManager.strip( nest.rawContent );
-			nest.content = this.EscapeManager.strip( nest.content );
-		}
-		
+				
 		//to return the given value if there is no error
 		Extraction.prototype.returnIfNoError = function( val ){
 			//if the current nest is not the base nest, then there was an error
@@ -368,12 +360,12 @@ var Settings = {
 		
 		Extraction.prototype.handleAllStringsUntil = function( condition ){
 			while( !condition() && this.strings.length ) this.handleNextString();
-			this.close();
+			this.currentNest.storeCurrentStringSegment();
 		}
 		
 		Extraction.prototype.handleAllStrings = function(){
 			while( this.strings.length ) this.handleNextString();
-			this.close();
+			this.currentNest.storeCurrentStringSegment();
 		}
 		
 		Extraction.prototype.handleNextString = function(){
@@ -452,10 +444,9 @@ var Settings = {
 		}
 		
 		Extraction.prototype.closeNest = function( str ){
-			
 			//if it is not valid according to the word boundary manager, then just add the string
 			if( !this.isValid( str ) ) return this.addString( str );
-				
+			
 			this.currentNest.close( str );
 			this.currentNest = this.currentNest.parent;
 		}
@@ -477,7 +468,8 @@ var Settings = {
 				this.nest = [];
 				this.simple = [];
 				this.hasChildNest = false;
-				this.rawContent = '';
+				this.raw = '';
+				this.original = '';
 				this.content = '';
 				this.open = '';
 				this.close = '';
@@ -507,7 +499,8 @@ var Settings = {
 			var childNest = child.public,
 				nest = this.public;
 			
-			this.lastEntryType = Nest;
+			this.storeCurrentStringSegment();
+			
 			nest.matches.push( childNest );
 			nest.nest.push( childNest );
 			nest.simple.push( childNest.simple );
@@ -515,30 +508,35 @@ var Settings = {
 			
 			this.addToChildNest( child, true );
 		}
-
-		function addChildString( str ){
-			var nest = this.public;
-			
-			//add this string to the content and handled content
-			this.addOriginalString( str );
-			this.addHandledString( str );
-			
-			//add the string to the nest and simply arrays
-			if( this.lastEntryType === String ){
-				nest.nest[ nest.nest.length-1 ] += str;
-				nest.simple[ nest.simple.length-1 ] += str;
-			}
-			else{
+		
+		function storeCurrentStringSegment(){
+			var str = this.currentStringSegment,
+				nest = this.public;
+				
+			if( str ){
+				this.addRawString( str );
+				//remove all escapes
+				str = this.EscapeManager.strip( str );
+				this.addOriginalString( str );
+				this.addHandledString( str );
 				nest.nest.push( str );
 				nest.simple.push( str );
 			}
-			
-			this.lastEntryType = String;
-			this.endsWithEscape = this.EscapeManager.isMatch( str );
+			//reset the string segment
+			this.currentStringSegment = '';
+		}
+
+		function addChildString( str ){			
+			this.currentStringSegment += str;
+			this.endsWithEscape = this.EscapeManager.isMatch( this.currentStringSegment );
 		}
 
 		function addOriginalString( str ){
-			this.public.rawContent += str;
+			this.public.original += str;
+		}
+
+		function addRawString( str ){
+			this.public.raw += str;
 		}
 
 		function addHandledString( str ){
@@ -563,11 +561,14 @@ var Settings = {
 				this.endsWithEscape = false;
 				this.lastLetterIsWord = false;
 				this.lastEntryType = null;
+				this.currentStringSegment = '';
 			}
 			
+			BaseNest.prototype.storeCurrentStringSegment = storeCurrentStringSegment;
 			BaseNest.prototype.addChildNest = addChildNest;
 			BaseNest.prototype.addChildString = addChildString;
 			BaseNest.prototype.addOriginalString = addOriginalString;
+			BaseNest.prototype.addRawString = addRawString;
 			BaseNest.prototype.addHandledString = addHandledString;
 			
 			BaseNest.prototype.addToChildNest = function( child, isParent ){
@@ -617,6 +618,7 @@ var Settings = {
 				this.endsWithEscape = false;
 				this.lastLetterIsWord = false;
 				this.lastEntryType = null;
+				this.currentStringSegment = '';
 					
 				//set the open string
 				nest.open = str;
@@ -627,9 +629,11 @@ var Settings = {
 				this.parent = parent;
 			}
 			
+			NestWrapper.prototype.storeCurrentStringSegment = storeCurrentStringSegment;
 			NestWrapper.prototype.addChildNest = addChildNest;
 			NestWrapper.prototype.addChildString = addChildString;
 			NestWrapper.prototype.addOriginalString = addOriginalString;
+			NestWrapper.prototype.addRawString = addRawString;
 			NestWrapper.prototype.addHandledString = addHandledString;
 			
 			NestWrapper.prototype.addToChildNest = function( child, isParent ){
@@ -653,14 +657,13 @@ var Settings = {
 				var nest = this.public,
 					fullString, length;
 				
-				//remove the escape chars
-				nest.rawContent = this.EscapeManager.strip( nest.rawContent );
-				nest.content = this.EscapeManager.strip( nest.content );
+				//store the last string segment
+				this.storeCurrentStringSegment();
 				
-				fullString = nest.open + nest.rawContent + str;
+				fullString = nest.open + nest.raw + str;
 				length = fullString.length;
 				
-				//if ignore, then just add the full string to the parent
+				//if ignore, then just add the full raw string to the parent
 				if( this.doIgnore ) return this.parent.addChildString( fullString );
 				
 				nest.close = str;
@@ -671,7 +674,8 @@ var Settings = {
 				});
 				
 				//add the content to the parent content
-				this.parent.addOriginalString( fullString );
+				this.parent.addRawString( fullString );
+				this.parent.addOriginalString( nest.open + nest.original + str );
 				this.parent.addHandledString( this.handle() );
 			}
 			
