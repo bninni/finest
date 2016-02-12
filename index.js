@@ -7,32 +7,24 @@ Todo:
 			-pen will match before penny
 		-make note that if a segment matches multiple open brackets, the first one listed will be used
 			-this is because the 'escapeRegex' is specific to a bracket
-		-note maxDepth=0 wont work for parser
-		-note that maxDepth will ignore any nested open brackets, so it might come across and use the wrong close bracket
-		
-	-fix close.isMatch and ignore.isMatch
-	
-	Settings:
-		-wordBoundary
-		-escape
 
-	raw, original, and handled should each have its own tree, simple, and content??
-		
-	What to do if open/close string has escape inside it?
-		
-	Should 'ignore' or 'escape' cascade to child nests??
+	Finish WordBoundary:
+		-need one for the open/close of the content brackets and one for the close bracket of the current nest
+		-should succeed if the boundary is another open/close bracket?
+			
+	Test all default Brackets
 	
-	Should wordBoundary be assigned to a bracket?
-	Should wordBoundary succeed if the boundary is another open/close bracket?
-	
+	Test using regex input for CompileRegexList
+
+	raw, original, and handled should each have its own tree, simple, content, index, nextIndex
 */
 
 var Settings = {
-		regexFirst : false,
 		wordBoundary : false,
-		maxDepth : -1,
-		wordRegex : '\\w',
+		rejectUnexpectedClose : true,
+		regexFirst : false,
 		escape : '',
+		wordRegex : '\\w',
 		errorHandle : function( err ){
 			throw err;
 		},
@@ -92,6 +84,9 @@ var Settings = {
 		
 		//to assign escape functions to the given object
 		function EscapeManager( source ){
+			
+			source = source || Settings.escape;
+			
 			this.captureRegex = buildCaptureRegex( source ),
 			this.countRegex = new RegExp( source ),
 			this.stripRegex = buildStripRegex( source );
@@ -118,7 +113,7 @@ var Settings = {
 		
 		return EscapeManager;
 	})(),
-	RegexList = (function(){
+	CompileRegexList = (function(){
 		//Characters that need to be escaped for use in RegEx
 		var regexChars = new RegExp( '[\\' + ['^','[',']','{','}','(',')','\\','/','.',',','?','-','+','*','|','$'].join('\\') + ']', 'g' );
 
@@ -131,326 +126,165 @@ var Settings = {
 		function makeRegexSafe( str ){
 			return str.replace( regexChars, '\\$&' )
 		}
-
-		function RegexList( data ){
-			this.string = [];
-			this.regex = [];
-			
-			if( isArray( data ) ) data.forEach( this.add, this );
-			else this.add( data );
-		}
-
-		//convert these mate list to a single source array
-		RegexList.prototype.toString = function( regexFirst ){
-			//sort the strings by length and convert to regex safe
-			var arr = this.string.sort( sortArrayByLength ).map( makeRegexSafe );
-			arr = regexFirst ? this.regex.concat( arr ) : arr.concat( this.regex );
-			this.source = arr.join('|');
-			return this.source;
-		}
-
-		RegexList.prototype.add = function( val ){
+		
+		function addToArray( val, stringArray, regexArray ){
 			var arr;
 			
 			//if regex, set the value to be the source without capture groups:
 			if( isRegExp( val ) ){
-				arr = this.regex;
+				arr = regexArray;
 				val = removeCaptureGroups( val.source );
 			}
 			//if string:
-			else if( isString( val ) ) arr = this.string;
+			else if( isString( val ) ) arr = stringArray;
 			else return;
 			
 			//add the value to the array if not already there
 			if( arr.indexOf( val ) === -1 ) arr.push( val );
 		}
 
-		return RegexList;
+		function CompileRegexList( data, regexFirst ){
+			var returnArray,
+				stringArray = [],
+				regexArray = [];
+				
+			function add( val ){
+				addToArray( val, stringArray, regexArray );
+			}
+				
+			if( isArray( data ) ) data.forEach( add );
+			else add( data );
+			
+			//sort the strings by length and convert to regex safe
+			var arr = stringArray.sort( sortArrayByLength ).map( makeRegexSafe );
+			
+			arr = regexFirst ? regexArray.concat( arr ) : arr.concat( regexArray );
+			return arr.join('|');
+		}
+		
+		return CompileRegexList;
 
 	})(),
 	Brackets = (function(){
-		function Bracket( data ){
-			var data = typeof data === "object" ? data : {},
-				open = data.open,
-				close = data.close,
-				escape = data.escape,
-				ignore = data.ignore,
-				maxDepth = typeof data.maxDepth === "number" ? data.maxDepth : Settings.maxDepth,
-				handle = typeof data.handle === "function" ? data.handle : Settings.handle;
+		function Mates( open, close, regexFirst ){
+			var openSource = CompileRegexList( open, regexFirst ),
+				closeSource = CompileRegexList( close, regexFirst );
 				
-			open =  new RegexList( open );
-			close = new RegexList( close );
-			escape = new RegexList( escape );
-			ignore = new RegexList( ignore );
-			
-			this.compile = function( regexFirst ){
-					
-				this.EscapeManager = new EscapeManager( escape.toString( regexFirst ) );
-				this.open = new RegexMatcher( open.toString( regexFirst ) );
-				this.close = new RegexMatcher( close.toString( regexFirst ) );
-				this.ignore = new RegexMatcher( ignore.toString( regexFirst ) );
-				this.handle = handle;
-				this.maxDepth = maxDepth;
-			}
+			this.Open = new RegexMatcher( openSource );
+			this.Close = new RegexMatcher( closeSource );
+		}
+		
+		function findOpenMatch( str, arr ){
+			var i, l = arr.length;
+			for(i=0;i<l;i++) if( arr[i].Open.isMatch( str ) ) return arr[i];
 		}
 		
 		function Brackets( obj ){
 			var data = typeof obj === "object" ? obj : {},
-				escape = data.escape,
-				maxDepth = data.maxDepth,
-				handle = data.handle,
-				ignore = data.ignore,
-				content = [];
+				regexFirst = typeof data.regexFirst === 'boolean' ? data.regexFirst : Settings.regexFirst,
+				escapeSource = CompileRegexList( data.escape, regexFirst ),
+				openSources = [],
+				closeSources = [],
+				contentList = [];
 			
-			//to add a bracket to the content
-			function add( open, close ){
-				content.push( new Bracket({
-					open : open,
-					close : close,
-					handle : handle,
-					escape : escape,
-					ignore : ignore,
-					maxDepth : maxDepth
-				}) );
+			//to add a Brackets to the bracketList
+			function addBracket( obj ){
+				openSources.push( obj.Open.source );
+				closeSources.push( obj.Close.source );
 			}
 			
+			//to create a new bracket from a mate pair
 			function addMate( mate ){
-				if( isArray( mate ) ) add( mate[0], mate[1] );
+				if( isArray( mate ) ) addBracket( new Mates( mate[0], mate[1], regexFirst ) );
 			}
 			
-			function addBracket( bracket ){
-				if( bracket instanceof Brackets ) content.push(bracket);
+			//to add content to the content list
+			function addContent(){
+				var args = Array.prototype.slice.apply( arguments );
+				args.forEach( addToContentBrackets );
+			}
+			function addToContentBrackets( obj ){
+				if( isArray( obj ) ) obj.forEach( addToContentBrackets );
+				else if( obj instanceof Brackets ) contentList.push( obj );
 			}
 			
-			//if its a single Brackets object, then return that
-			if( obj instanceof Brackets ) return obj;
-			
-			//if its an array, then add each to the content
-			if( isArray( obj ) ) obj.forEach( addBracket );
-			else if( 'mates' in data && isArray( data.mates ) ) data.mates.forEach( addMate );
+			//create each Bracket and add to the Bracket List
+			if( 'mates' in data && isArray( data.mates ) ) data.mates.forEach( addMate );
 			else if( 'mate' in data ) addMate( data.mate );
-			else add( data.open, data.close );
+			else addBracket( new Mates( data.open, data.close, regexFirst ) );
 			
-			this.compile = function( regexFirst ){
+			//add each Content Bracket to the Content List
+			addToContentBrackets( data.content );
+			
+			this.EscapeManager = new EscapeManager( escapeSource );
+			this.rejectUnexpectedClose = typeof data.rejectUnexpectedClose === 'boolean' ? data.rejectUnexpectedClose : Settings.rejectUnexpectedClose,
+			this.Handle = typeof data.handle === "function" ? data.handle : Settings.handle;
+			this.WordBoundaryManager = new WordBoundaryManager( data.wordBoundary, CompileRegexList( data.wordRegex, regexFirst ) ),
+			this.addContent = addContent;
+			this.Open = new RegexMatcher( openSources.join('|') );
+			this.Close = new RegexMatcher( closeSources.join('|') );
+			this.getContentManager = function(){
+				return new ContentManager( contentList, this.Close );
+			}
+			//to see if the given str is valid
+			//is valid if the prev str does not end with escape AND
+			//there is a no word boundary error
+			this.isValid = function( prevStr, str, nextStr ){
+				return !this.EscapeManager.isMatch( prevStr ) && this.WordBoundaryManager.isValid( prevStr, str, nextStr );
+			}
+			
+			this.contentList = contentList;
+		}
+		
+		function ContentManager( contentList, closeManager ){
 				
 				var openSources = [],
-					closeSources = [];
+					closeSources = [],
+					regexSource = closeManager.source,
+					openRegex = null,
+					nextRegex = null;
 				
-				content.forEach(function( bracket ){				
-					bracket.compile( regexFirst );
-					openSources.push( bracket.open.source );
-					closeSources.push( bracket.close.source );
-				});
+				contentList.forEach(function( obj ){
+					openSources.push( obj.Open.source );
+					closeSources.push( obj.Close.source );
+				})
 				
-				this.open = new RegexMatcher( openSources.join('|') );
-				this.close = new RegexMatcher( closeSources.join('|') );
-				this.combinedSources = (this.open.source && this.close.source) ? this.open.source + '|' + this.close.source : '';
+				if( contentList.length ){
+					regexSource += '|' + openSources.join('|') + '|' + closeSources.join('|');
+					openRegex = new RegExp('^(' + openSources.join('|') + ')$' );
+				}
 				
-				this.getFirstOpenMatch = function(str){
-					var i, l = content.length,
-						match = null;
-						
-					for(i=0;i<l;i++){
-						if( content[i].open.isMatch( str ) ){
-							match = content[i];
-							break;
-						}
-					}
-					
-					//if the match is a Brackets, then get the specific Bracket
-					if( match instanceof Brackets ) return match.getFirstOpenMatch( str );
-					
-					return match;
-				};
+				if( regexSource ) nextRegex = new RegExp('^([\\w\\W]*?)(' + regexSource + ')([\\w\\W]*)$');
 				
-				return this;
-			}
-			
-			//initialize compilation with regexFirst = false
-			this.compile( false );
+				this.isCloseMatch = function( str ){
+					return closeManager.isMatch( str );
+				}
+				this.nextRegex = nextRegex;
+				
+				this.getNextString = function( str ){
+					return str.match( nextRegex );
+				}
+				
+				this.getOpenMatch = function( str ){
+					var match;
+					//return null if not open match
+					if( !str.match( openRegex ) ) return null;
+					return findOpenMatch( str, contentList );
+				}
 		}
 		
 		return Brackets;
 	})(),
-	Extraction = (function(){
-		var lineBreakRegex = /\r\n?|\n/g;
-		
-		function Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, ignore ){
-			
-			this.capture = capture;
-			this.except = except;
-			this.regex = regex;
-			this.WordBoundaryManager = wordBoundaryManager;
-			this.EscapeManager = escapeManager;
-			this.ignore = ignore;			
-			this.maxDepth = maxDepth;
-			this.errorHandle = errorHandle;
-		}
-		
-		Extraction.prototype.init = function( str, doInclude ){
-			this.strings = str.split( this.regex );
-			this.getNextString();
-			this.row = 0;
-			this.col = 0;
-			this.index = 0;
-			this.currentNest = new Nest.Base( doInclude, this );
-			return this.currentNest.public;
-		}
-				
-		//to return the given value if there is no error
-		Extraction.prototype.returnIfNoError = function( val ){
-			//if the current nest is not the base nest, then there was an error
-			if( this.currentNest.parent ){
-				this.errorHandle(new Error('No close bracket found for \'' + this.currentNest.public.open + '\' at index ' + this.currentNest.startIndex + ' (row ' + this.currentNest.startRow + ', col ' + this.currentNest.startCol + ')' ));
-				return null;
-			}
-			
-			return val;
-		}
-
-		Extraction.prototype.extract = function( str, count ){
-			//initialize the base nest, but don't include it in the results
-			var self = this,
-				baseNest = this.init( str, false );
-			this.handleAllStringsUntil(function(){
-				return self.currentNest.public === baseNest && baseNest.matches.length === count;
-			});
-			return this.returnIfNoError( baseNest.matches );
-		}
-
-		Extraction.prototype.handle = function( str ){
-			var baseNest = this.init( str, true );
-			this.handleAllStrings();
-			return this.returnIfNoError( baseNest.content );
-		}
-
-		Extraction.prototype.parse = function( str ){	
-			var baseNest = this.init( str, true );
-			this.handleAllStrings();
-			return this.returnIfNoError( baseNest );
-		}
-
-		Extraction.prototype.replace = function( str, fn ){
-			var baseNest = this.init( str, true );
-			this.nestHandle = fn;
-			this.handleAllStrings();
-			return this.returnIfNoError( baseNest.content );
-		}
-		
-		Extraction.prototype.handleAllStringsUntil = function( condition ){
-			while( !condition() && this.strings.length ) this.handleNextString();
-			this.currentNest.storeCurrentStringSegment();
-		}
-		
-		Extraction.prototype.handleAllStrings = function(){
-			while( this.strings.length ) this.handleNextString();
-			this.currentNest.storeCurrentStringSegment();
-		}
-		
-		Extraction.prototype.handleNextString = function(){
-			var str = this.nextString;
-			this.getNextString();
-			this.handleString( str );
-			this.increaseCounters( str );
-		}
-		
-		Extraction.prototype.getNextString = function(){
-			do{
-				this.nextString = popFirst( this.strings );
-			}while( !this.nextString && this.strings.length )
-		}
-		
-		Extraction.prototype.increaseCounters = function( str ){
-			var match = str.split( lineBreakRegex ),
-				//the number of linebreaks is one less than the size of the array
-				numOfBreaks = match.length-1;
-				
-			this.index += str.length;
-			this.row += numOfBreaks;
-			//reset col index if there is a line break
-			if( numOfBreaks ) this.col = 0;
-			//increase by the length of the last string in the array
-			this.col += match.pop().length;
-		}
-
-		Extraction.prototype.handleString = function( str ){
-
-			//if the last portion of the content is escaped or this string is an ignore match, then just add the string
-			if( this.currentNest.endsWithEscape || this.currentNest.isIgnoreMatch( str ) ) return this.addString( str );
-
-			//if the string is a close match, then close
-			if( this.currentNest.isCloseMatch( str ) ) return this.closeNest( str );
-			
-			//if we are at the max depth, then add the string
-			if( this.currentNest.atMaxDepth ) return this.addString( str );
-			
-			//if it matches an open Regex:
-			if( this.capture.open.isMatch( str ) ) return this.openNest( str, false );
-			
-			//if it matches an escape open regex, then set escaped
-			if( this.except.open.isMatch( str ) ) return this.openNest( str, true );
-			
-			//if it matches any close Regex:
-			if( this.capture.close.isMatch( str ) || this.except.close.isMatch( str ) ) return this.handleUnmatchedClose( str );
-			
-			this.addString( str );
-		}
-
-		Extraction.prototype.openNest = function( str, doIgnore ){
-			var bracket = (doIgnore ? this.except : this.capture).getFirstOpenMatch( str ),
-				handle = this.nestHandle ? this.nestHandle : bracket.handle;
-				
-			//if it is not valid according to the word boundary, then just add the string
-			if( !this.isValid( str ) ) return this.addString( str );
-				
-			this.currentNest = new Nest.Wrapper( str, this.currentNest, bracket, handle, this, doIgnore );
-		}
-
-		//to add text to the current result if there is one
-		Extraction.prototype.addString = function( str ){
-			this.currentNest.addChildString( str );
-		}
-		
-		Extraction.prototype.handleUnmatchedClose = function( str ){
-			//if it is valid according to the word boundary manager, then produce an error
-			if( this.isValid( str ) ) this.errorHandle(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
-			
-			this.addString( str );
-		}
-
-		Extraction.prototype.isValid = function( str ){
-			return this.WordBoundaryManager.isValid( this.currentNest.currentStringSegment, str, this.nextString );
-		}
-		
-		Extraction.prototype.closeNest = function( str ){
-			//if it is not valid according to the word boundary manager, then just add the string
-			if( !this.isValid( str ) ) return this.addString( str );
-			
-			this.currentNest.close( str );
-			this.currentNest = this.currentNest.parent;
-		}
-		return Extraction;
-	})(),
-	Nest = new function(){
-		//to get the lowest non-negative value in the array
-		function lowestNonNegative(arr){
-			var newArr = arr.sort(),
-				ret = popFirst( newArr );
-			
-			while( newArr.length && ret < 0) ret = popFirst( newArr );
-			
-			return ret >= 0 ? ret : -1;
-		}
-
+	Nest = (function(){
 		var Nest = (function(){
-			function Nest(){
+			function Nest( str ){
 				this.nest = [];
 				this.simple = [];
 				this.hasChildNest = false;
 				this.raw = '';
 				this.original = '';
 				this.content = '';
-				this.open = '';
+				this.open = str ? str : '';
 				this.close = '';
 				this.index = [];
 				this.nextIndex = [];
@@ -473,165 +307,97 @@ var Settings = {
 			
 			return Nest;
 		})();
-
-		function addChildNest( child ){
-			var childNest = child.public,
-				nest = this.public;
-			
-			this.storeCurrentStringSegment();
-			
-			nest.matches.push( childNest );
-			nest.nest.push( childNest );
-			nest.simple.push( childNest.simple );
-			nest.hasChildNest = true;
-			
-			this.addToChildNest( child, true );
-		}
 		
-		function storeCurrentStringSegment(){
-			var str = this.currentStringSegment,
-				nest = this.public;
-				
-			if( str ){
-				this.addRawString( str );
-				//remove all escapes
-				str = this.EscapeManager.strip( str );
-				this.addOriginalString( str );
-				this.addHandledString( str );
-				nest.nest.push( str );
-				nest.simple.push( str );
-			}
-			//reset the string segment
-			this.currentStringSegment = '';
-		}
-
-		function addChildString( str ){			
-			this.currentStringSegment += str;
-			this.endsWithEscape = this.EscapeManager.isMatch( this.currentStringSegment );
-		}
-
-		function addOriginalString( str ){
-			this.public.original += str;
-		}
-
-		function addRawString( str ){
-			this.public.raw += str;
-		}
-
-		function addHandledString( str ){
-			this.public.content += str;
-		}
-			
-		this.Base = (function(){
-			function BaseNest( doInclude, extraction ){
-							
-				this.public = new Nest();
+		var NestWrapper = (function(){
+			function NestWrapper( brackets, extraction, str, parent ){
+				this.public = new Nest( str );
 				
 				//set some properties from the input
-				this.doInclude = doInclude;
-				this.maxDepth = extraction.maxDepth;
-				this.isIgnoreMatch = function( str ){
-					return extraction.ignore.isMatch( str );
-				}
-				this.EscapeManager = extraction.EscapeManager;
+				this.Brackets = brackets;
+				this.ContentManager = brackets.getContentManager();
+				this.startIndex = extraction.index;
+				this.startRow = extraction.row;
+				this.startCol = extraction.col;				
+				this.handle = (extraction.nestHandle ? extraction.nestHandle : brackets.Handle).bind(this.public);
+				this.parent = parent;
+				
+				//override the isCloseMatch function if this is the Base Nest
+				if( !parent ) this.ContentManager.isCloseMatch = function( str ){
+					return false;
+				};
 				
 				//initialize other properties
-				this.startIndex = 0;
-				this.doIgnore = false;
-				this.atMaxDepth = false;
-				this.endsWithEscape = false;
-				this.lastLetterIsWord = false;
+				this.doInclude = true;
 				this.currentStringSegment = '';
 			}
 			
-			BaseNest.prototype.storeCurrentStringSegment = storeCurrentStringSegment;
-			BaseNest.prototype.addChildNest = addChildNest;
-			BaseNest.prototype.addChildString = addChildString;
-			BaseNest.prototype.addOriginalString = addOriginalString;
-			BaseNest.prototype.addRawString = addRawString;
-			BaseNest.prototype.addHandledString = addHandledString;
+			NestWrapper.prototype.storeCurrentStringSegment = function(){
+				var str = this.currentStringSegment,
+					nest = this.public;
+					
+				if( str ){
+					this.addRawString( str );
+					//remove all escapes
+					str = this.Brackets.EscapeManager.strip( str );
+					this.addOriginalString( str );
+					this.addHandledString( str );
+					nest.nest.push( str );
+					nest.simple.push( str );
+				}
+				//reset the string segment
+				this.currentStringSegment = '';
+			};
 			
-			BaseNest.prototype.addToChildNest = function( child, isParent ){
+			NestWrapper.prototype.addChildNest = function( str, brackets, extraction ){
+				var child = new NestWrapper( brackets, extraction, str, this ),
+					childNest = child.public,
+					nest = this.public;
+				
+				this.storeCurrentStringSegment();
+				
+				nest.matches.push( childNest );
+				nest.nest.push( childNest );
+				nest.simple.push( childNest.simple );
+				nest.hasChildNest = true;
+				
+				this.addToChildNest( child, true );
+				
+				return child;
+			};
+			
+			NestWrapper.prototype.addChildString = function( str ){			
+				this.currentStringSegment += str;
+			};
+			
+			NestWrapper.prototype.addOriginalString = function( str ){
+				this.public.original += str;
+			};
+			
+			NestWrapper.prototype.addRawString = function( str ){
+				this.public.raw += str;
+			};
+			
+			NestWrapper.prototype.addHandledString = function( str ){
+				this.public.content += str;
+			};
+			
+			NestWrapper.prototype.addToChildNest = function( child, isParent ){
 				var childNest = child.public,
 					nest = this.public;
 					
-				//add the offset from the original string regardless
 				childNest.index.unshift( child.startIndex );
 				
-				//only add if this base nest is included
+				//if the nest is not included, then return
 				if( !this.doInclude ) return;
 				
 				if( isParent ) childNest.parent = nest;
 				
 				childNest.ancestors.unshift( nest );
 				childNest.depth++;
+				
+				if( this.parent ) this.parent.addToChildNest( child, false );
 			};
 			
-			BaseNest.prototype.isCloseMatch = function( str ){
-				return false;
-			}
-			
-			return BaseNest;
-		})();
-		
-		this.Wrapper = (function(){
-			function NestWrapper( str, parent, bracket, handle, extraction, doIgnore ){
-				//ignore if the parent is ignored as well
-				var doIgnore = doIgnore || parent.doIgnore,
-				//use the lowest non-negative value for the max depth
-					maxDepth = lowestNonNegative( [parent.maxDepth-1, bracket.maxDepth] ),
-					nest = new Nest();
-				
-				//set some properties from the input
-				this.doIgnore = doIgnore;
-				this.startIndex = extraction.index;
-				this.startRow = extraction.row;
-				this.startCol = extraction.col;
-				this.EscapeManager = bracket.EscapeManager;
-				this.isIgnoreMatch = function(str){
-					return bracket.ignore.isMatch(str);
-				};
-				this.isCloseMatch = function(str){
-					return bracket.close.isMatch(str);
-				};
-				this.handle = handle.bind(nest);
-				this.maxDepth = maxDepth;
-				
-				//initialize other values
-				this.atMaxDepth = maxDepth === 0;
-				this.endsWithEscape = false;
-				this.lastLetterIsWord = false;
-				this.currentStringSegment = '';
-					
-				//set the open string
-				nest.open = str;
-				this.public = nest;
-				
-				//add this as a child to the parent if not ignoring
-				if( !doIgnore ) parent.addChildNest( this );
-				this.parent = parent;
-			}
-			
-			NestWrapper.prototype.storeCurrentStringSegment = storeCurrentStringSegment;
-			NestWrapper.prototype.addChildNest = addChildNest;
-			NestWrapper.prototype.addChildString = addChildString;
-			NestWrapper.prototype.addOriginalString = addOriginalString;
-			NestWrapper.prototype.addRawString = addRawString;
-			NestWrapper.prototype.addHandledString = addHandledString;
-			
-			NestWrapper.prototype.addToChildNest = function( child, isParent ){
-				var childNest = child.public,
-					nest = this.public;
-				
-				if( isParent ) childNest.parent = nest;
-				
-				childNest.ancestors.unshift( nest );
-				childNest.index.unshift( child.startIndex - this.startIndex - nest.open.length );
-				childNest.depth++;
-				
-				this.parent.addToChildNest( child, false );
-			};
-						
 			NestWrapper.prototype.close = function( str ){
 				var nest = this.public,
 					fullString, length;
@@ -639,13 +405,10 @@ var Settings = {
 				//store the last string segment
 				this.storeCurrentStringSegment();
 				
+				nest.close = str;
+				
 				fullString = nest.open + nest.raw + str;
 				length = fullString.length;
-				
-				//if ignore, then just add the full raw string to the parent
-				if( this.doIgnore ) return this.parent.addChildString( fullString );
-				
-				nest.close = str;
 				
 				//get the next index for each ancestor
 				nest.index.forEach(function( i ){
@@ -656,68 +419,184 @@ var Settings = {
 				this.parent.addRawString( fullString );
 				this.parent.addOriginalString( nest.open + nest.original + str );
 				this.parent.addHandledString( this.handle() );
-			}
+				
+				return this.parent;
+			};
 			
 			return NestWrapper;
 		})();
-	},
+		
+		return NestWrapper;
+	})(),
 	Parser = (function(){
+		
+		var Extraction = (function(){
+			var lineBreakRegex = /\r\n?|\n/g;
+			
+			function Extraction( errorHandle, brackets, str ){
+				this.errorHandle = errorHandle;
+				this.remainingString = str;
+				this.row = 0;
+				this.col = 0;
+				this.index = 0;
+				this.WordBoundaryManager = brackets.wordBoundaryManager;
+				this.Nest = new Nest( brackets, this );	
+			}
+			
+			//to return the given value if there is no error
+			Extraction.prototype.returnIfNoError = function( val ){
+				//if the current nest is not the base nest, then there was an error
+				if( this.Nest.parent ){
+					this.errorHandle(new Error('No close bracket found for \'' + this.Nest.public.open + '\' at index ' + this.Nest.startIndex + ' (row ' + this.Nest.startRow + ', col ' + this.Nest.startCol + ')' ));
+					return null;
+				}
+				return val;
+			}
+			
+			Extraction.prototype.handleAllStringsUntil = function( condition ){
+				while( !condition() && this.remainingString ) this.handleNextString();
+				this.Nest.storeCurrentStringSegment();
+			}
+			
+			Extraction.prototype.handleAllStrings = function(){
+				while( this.remainingString ) this.handleNextString();
+				this.Nest.storeCurrentStringSegment();
+			}
+			
+			Extraction.prototype.handleNextString = function(){
+				var str = this.getNextString();
+				//if a string was returned, then handle it
+				//otherwise, it is finished
+				if( !str ) return;
+				
+				//if it is not valid according to the word boundary, then just add the string
+				if( !this.Nest.Brackets.isValid( this.Nest.currentStringSegment, str, this.remainingString ) ) this.addString( str );
+				//otherwise, handle it
+				else this.handleString( str );
+				
+				this.increaseCounters( str );
+			}
+			
+			Extraction.prototype.getNextString = function(){
+				
+				var match = this.Nest.ContentManager.getNextString( this.remainingString );
+				
+				//if there is no match, then it is finished
+				if( !match ){
+					this.addString( this.remainingString );
+					return this.remainingString = '';
+				}
+				//add the non-important string
+				this.addString( match[1] );
+				//update the remaining string
+				this.remainingString = match[3];
+				//return the important string
+				return match[2];
+			}
+			
+			Extraction.prototype.increaseCounters = function( str ){
+				var match = str.split( lineBreakRegex ),
+					//the number of linebreaks is one less than the size of the array
+					numOfBreaks = match.length-1;
+					
+				this.index += str.length;
+				this.row += numOfBreaks;
+				//reset col index if there is a line break
+				if( numOfBreaks ) this.col = 0;
+				//increase by the length of the last string in the array
+				this.col += match.pop().length;
+			}
+
+			Extraction.prototype.handleString = function( str ){
+				var brackets;
+				
+				//if the string is a close match, then close
+				if( this.Nest.ContentManager.isCloseMatch( str ) ) return this.closeNest( str );
+				
+				//if the string is an open match, then open
+				if( brackets = this.Nest.ContentManager.getOpenMatch( str ) ) return this.openNest( str, brackets );
+				
+				//otherwise, it is an unmatched Close bracket
+				
+				//if we reject unexpected close, then run the error handle
+				if( this.Nest.Brackets.rejectUnexpectedClose ) this.errorHandle(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
+				this.addString( str )
+			}
+
+			Extraction.prototype.openNest = function( str, brackets ){
+				this.Nest = this.Nest.addChildNest( str, brackets, this );
+			}
+
+			//to add text to the current result if there is one
+			Extraction.prototype.addString = function( str ){
+				if( str ) this.Nest.addChildString( str );
+			}
+			
+			Extraction.prototype.closeNest = function( str ){
+				this.Nest = this.Nest.close( str );
+			}
+			
+			return Extraction;
+		})();
 		
 		function stripHandle(){
 			return '';
 		};
 		
-		function assignWordBoundaryFunctions( target, source ){
-			var wordRegex = source || Settings.wordRegex,
-				wordRegexEnd = new RegExp( '(' + wordRegex + ')$' ),
-				wordRegexBegin = new RegExp( '^(' + wordRegex + ')' );
+		function Parser( brackets, errorHandle ){
 			
-			target.isLastLetterWord = function( str ){
-				return str.match( wordRegexEnd );
+			var errorHandle = typeof errorHandle === "function" ? errorHandle : Settings.errorHandle;
+			
+			if( !(brackets instanceof Brackets) ){
+				errorHandle(new Error('The Parser input must be a Brackets Object'));
+				return null;
 			}
 			
-			target.isFirstLetterWord = function( str ){
-				return str.match( wordRegexBegin );
-			}
-		}
-		
-		function Parser( opts ){
-			
-			var opts = typeof opts === 'object' ? opts : {},
-				regexFirst = typeof opts.regexFirst === 'boolean' ? opts.regexFirst : Settings.regexFirst,
-				wordBoundaryManager = new WordBoundaryManager( opts.wordBoundary, new RegexList( opts.wordRegex ).toString( regexFirst ) ),
-				ignore = new RegexMatcher( new RegexList( opts.ignore ).toString( regexFirst ) ),
-				errorHandle = typeof opts.errorHandle === "function" ? opts.errorHandle : Settings.errorHandle,
-				maxDepth = typeof opts.maxDepth === "number" ? opts.maxDepth : (Settings.maxDepth ? Settings.maxDepth : -1 ), //if the Settings.maxDepth = 0, then use -1 instead
-				capture = new Brackets( opts.capture ).compile( regexFirst ),
-				except = new Brackets( opts.except ).compile( regexFirst ),
-				regex = new RegExp( '(' + capture.combinedSources + (except.combinedSources ? ('|' + except.combinedSources) : '') + ')' ),
-				escapeManager = new EscapeManager( new RegexList( opts.escape ).toString( regexFirst ) );
-														
-			function newExtraction(){
-				return new Extraction( capture, except, regex, maxDepth, escapeManager, errorHandle, wordBoundaryManager, ignore );
+			function newX( str ){
+				return new Extraction( errorHandle, brackets, str );
 			}
 			
 			this.extract = function( str, count ){
+				var X = newX( str );
+				
 				if (typeof count !== "number") count = -1;
-				return newExtraction().extract( str, count );
+				
+				X.Nest.doInclude = false;
+				
+				//if there is a count, then stop when the number of matches is reached
+				if( count > -1 ) X.handleAllStringsUntil(function(){
+					return (!X.Nest.parent && X.Nest.matches.length === count);
+				});
+				//if there is no count, then just handle all strings
+				else X.handleAllStrings();
+				
+				return X.returnIfNoError( X.Nest.public.matches );
 			}
 			
 			this.handle = function( str ){
-				return newExtraction().handle( str );
+				var X = newX( str );
+				X.handleAllStrings();
+				return X.returnIfNoError( X.Nest.public.content );
 			}
 			
 			this.parse = function( str ){
-				return newExtraction().parse( str );
+				var X = newX( str );
+				X.handleAllStrings();
+				return X.returnIfNoError( X.Nest.public );
 			}
+			
+			function replace( str, fn ){
+				var X = newX( str );
+				X.nestHandle = fn;
+				X.handleAllStrings();
+				return X.returnIfNoError( X.Nest.public.content );
+			}
+			this.replace = replace;
 			
 			this.strip = function( str ){
-				return newExtraction().replace( str, stripHandle );
+				return replace( str, stripHandle );
 			}
 			
-			this.replace = function( str, fn ){
-				return newExtraction().replace( str, fn );
-			}
 		}
 		
 		return Parser;
@@ -734,7 +613,6 @@ var Settings = {
 			}),
 			Bracks = new Brackets({
 				mate : ['[',']'],
-				maxDepth : 0,
 				escape : '\\'
 			}),
 			opts = {
@@ -752,7 +630,6 @@ var Settings = {
 	JS = {
 		RegExp : new Brackets({
 			mate : ['/','/'],
-			maxDepth : 0,
 			escape : '\\'
 		}),
 		Strings : new Brackets({
@@ -761,7 +638,6 @@ var Settings = {
 				['\'','\''],
 				['`','`'],
 			],
-			maxDepth : 0,
 			escape : '\\'
 		}),
 		Comments : new Brackets({
@@ -769,34 +645,29 @@ var Settings = {
 				['/*','*/'],
 				['//',['\r\n','\r','\n']],
 			],
-			maxDepth : 0
 		})
 	},
 	CSS = {
 		Comments : new Brackets({
 			mate : ['/*','*/'],
-			maxDepth : 0,
 		}),
 		Strings : new Brackets({
 			mates : [
 				['"','"'],
 				['\'','\''],
 			],
-			maxDepth : 0,
 			escape : '\\'
 		}),
 	},
 	HTML = {
 		Comments : new Brackets({
 			mate : ['<!--','-->'],
-			maxDepth : 0,
 		}),
 		Strings : new Brackets({
 			mates : [
 				['"','"'],
 				['\'','\''],
 			],
-			maxDepth : 0,
 			escape : '\\'
 		}),
 	};
@@ -824,16 +695,18 @@ function buildFullRegex( source ){
 }
 
 //to define the settings
-function defineSettings( obj ){
-	var key;
-	
+function defineSettings( obj ){	
 	if (typeof obj !== 'object') return;
 	
 	if( typeof obj.regexFirst === 'boolean' ) Settings.regexFirst = obj.regexFirst;
-	if( typeof obj.maxDepth === 'number' ) Settings.maxDepth = obj.maxDepth;
-	if( 'wordRegex' in obj ) Settings.wordRegex = new RegexList( obj.wordRegex ).toString( Settings.regexFirst );
+	if( typeof obj.rejectUnexpectedClose === 'boolean' ) Settings.rejectUnexpectedClose = obj.rejectUnexpectedClose;
+	if( typeof obj.wordBoundary === 'boolean' ) Settings.wordBoundary = obj.wordBoundary;
+	
 	if( typeof obj.errorHandle === 'function' ) Settings.errorHandle = obj.errorHandle;
 	if( typeof obj.handle === 'function' ) Settings.handle = obj.handle;
+	
+	if( 'wordRegex' in obj ) Settings.wordRegex = CompileRegexList( obj.wordRegex, Settings.regexFirst );
+	if( 'escape' in obj ) Settings.escape = CompileRegexList( obj.escape, Settings.regexFirst );
 };
 
 module.exports = {
