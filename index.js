@@ -10,6 +10,11 @@ Todo:
 		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
 			-but if the close string is part of an open string, it will match the open string first
 			
+	For all parser function, cast as string first
+		-same for empty parser
+		
+	Can run async, handle functions have resolve, reject inputs
+			
 	Finish WordBoundary:
 		-need one for the open/close of the content brackets and one for the close bracket of the current nest
 		-should succeed if the boundary is another open/close bracket?
@@ -23,13 +28,14 @@ Todo:
 
 var Settings = {
 		wordBoundary : false,
+		async : false,
 		rejectUnexpectedClose : true,
 		stripEscapes : false,
 		regexFirst : false,
 		closeFirst : true,
 		escape : '',
 		wordRegex : '\\w',
-		errorHandle : function( err ){
+		reject : function( err ){
 			throw err;
 		},
 		handle : function(){
@@ -285,6 +291,12 @@ var Settings = {
 		return Brackets;
 	})(),
 	Nest = (function(){
+	
+		function asyncHandle( fn, resolve ){
+			var result = fn.apply( this, resolve );
+			if( result !== undefined ) resolve( result );
+		}
+	
 		var Nest = (function(){
 			function Nest( str ){
 				this.nest = [];
@@ -320,6 +332,9 @@ var Settings = {
 		var NestWrapper = (function(){
 			function NestWrapper( brackets, extraction, str, parent ){
 				this.public = new Nest( str );
+				
+				//return an empty nest if there are no input arguments
+				if( !brackets ) return this.public;
 				
 				//set some properties from the input
 				this.Brackets = brackets;
@@ -434,135 +449,178 @@ var Settings = {
 	})(),
 	Parser = (function(){
 		
-		var Extraction = (function(){
-			var lineBreakRegex = /\r\n?|\n/g;
+		var EmptyParser = (function(){
 			
-			function Extraction( errorHandle, brackets, str ){
-				this.errorHandle = errorHandle;
-				this.remainingString = str;
-				this.row = 0;
-				this.col = 0;
-				this.index = 0;
-				this.WordBoundaryManager = brackets.wordBoundaryManager;
-				this.Nest = new Nest( brackets, this );
-			}
-			
-			//to return the given value if there is no error
-			Extraction.prototype.returnIfNoError = function( val ){
-				//if the current nest is not the base nest, then there was an error
-				if( this.Nest.parent ){
-					this.errorHandle(new Error('No close bracket found for \'' + this.Nest.public.open + '\' at index ' + this.Nest.startIndex + ' (row ' + this.Nest.startRow + ', col ' + this.Nest.startCol + ')' ));
-					return null;
+				function returnInput( val ){
+					return val;
 				}
-				return val;
-			}
 			
-			Extraction.prototype.handleAllStringsUntil = function( condition ){
-				while( !condition() && this.remainingString ) this.handleNextString();
-				this.Nest.storeCurrentStringSegment();
-			}
-			
-			Extraction.prototype.handleAllStrings = function(){
-				while( this.remainingString ) this.handleNextString();
-				this.Nest.storeCurrentStringSegment();
-			}
-			
-			Extraction.prototype.handleNextString = function(){
-				var str = this.getNextString();
-				//if a string was returned, then handle it
-				//otherwise, it is finished
-				if( !str ) return;
+				function EmptyParser(){}
 				
-				//if it is not valid according to the word boundary, then just add the string
-				if( !this.Nest.Brackets.isValid( this.Nest.currentStringSegment, str, this.remainingString ) ) this.addString( str );
-				//otherwise, handle it
-				else this.handleString( str );
-				
-				this.increaseCounters( str );
-			}
-			
-			Extraction.prototype.getNextString = function(){
-				var match = this.Nest.ContentManager.getNextString( this.remainingString );
-				
-				//if there is no match, then it is finished
-				if( !match ){
-					this.addString( this.remainingString );
-					return this.remainingString = '';
+				EmptyParser.prototype.extract = function(){
+					return [];
 				}
-				//add the non-important string
-				this.addString( match[1] );
-				this.increaseCounters( match[1] );
 				
-				//update the remaining string
-				this.remainingString = match[3];
-				//return the important string
-				return match[2];
-			}
-			
-			Extraction.prototype.increaseCounters = function( str ){
-				var match = str.split( lineBreakRegex ),
-					//the number of linebreaks is one less than the size of the array
-					numOfBreaks = match.length-1;
+				EmptyParser.prototype.parse = function( str ){
+					return new Nest();
+				}
+				
+				EmptyParser.prototype.handle = returnInput;
+				EmptyParser.prototype.replace = returnInput;
+				EmptyParser.prototype.strip = returnInput;
+				
+				return EmptyParser;
+			})(),
+			Extraction = (function(){
+				var lineBreakRegex = /\r\n?|\n/g;
+				
+				function Extraction( reject, str, brackets ){
+					this.reject = reject;
+					this.remainingString = str;
+					this.row = 0;
+					this.col = 0;
+					this.index = 0;
+					this.WordBoundaryManager = brackets.wordBoundaryManager;
+					this.Nest = new Nest( brackets, this );
+				}
+				
+				//to return the given value if there is no error
+				Extraction.prototype.checkUnclosed = function(){
+					//if the current nest is not the base nest, then there was an error
+					if( this.Nest.parent ) this.reject(new Error('No close bracket found for \'' + this.Nest.public.open + '\' at index ' + this.Nest.startIndex + ' (row ' + this.Nest.startRow + ', col ' + this.Nest.startCol + ')' ));
+				}
+				
+				Extraction.prototype.handleAllStringsUntil = function( condition ){
+					while( !condition() && this.remainingString ) this.handleNextString();
+					this.Nest.storeCurrentStringSegment();
+				}
+				
+				Extraction.prototype.handleAllStrings = function(){
+					while( this.remainingString ) this.handleNextString();
+					this.Nest.storeCurrentStringSegment();
+				}
+				
+				Extraction.prototype.handleNextString = function(){
+					var str = this.getNextString();
+					//if a string was returned, then handle it
+					//otherwise, it is finished
+					if( !str ) return;
 					
-				this.index += str.length;
-				this.row += numOfBreaks;
-				//reset col index if there is a line break
-				if( numOfBreaks ) this.col = 0;
-				//increase by the length of the last string in the array
-				this.col += match.pop().length;
-			}
+					//if it is not valid according to the word boundary, then just add the string
+					if( !this.Nest.Brackets.isValid( this.Nest.currentStringSegment, str, this.remainingString ) ) this.addString( str );
+					//otherwise, handle it
+					else this.handleString( str );
+					
+					this.increaseCounters( str );
+				}
+				
+				Extraction.prototype.getNextString = function(){
+					var match = this.Nest.ContentManager.getNextString( this.remainingString );
+					
+					//if there is no match, then it is finished
+					if( !match ){
+						this.addString( this.remainingString );
+						return this.remainingString = '';
+					}
+					//add the non-important string
+					this.addString( match[1] );
+					this.increaseCounters( match[1] );
+					
+					//update the remaining string
+					this.remainingString = match[3];
+					//return the important string
+					return match[2];
+				}
+				
+				Extraction.prototype.increaseCounters = function( str ){
+					var match = str.split( lineBreakRegex ),
+						//the number of linebreaks is one less than the size of the array
+						numOfBreaks = match.length-1;
+						
+					this.index += str.length;
+					this.row += numOfBreaks;
+					//reset col index if there is a line break
+					if( numOfBreaks ) this.col = 0;
+					//increase by the length of the last string in the array
+					this.col += match.pop().length;
+				}
 
-			Extraction.prototype.handleString = function( str ){
-				var brackets;
-				
-				//if the string is a close match, then close
-				if( this.Nest.ContentManager.isCloseMatch( str ) ) return this.closeNest( str );
-				
-				//if the string is an open match, then open
-				if( brackets = this.Nest.ContentManager.getOpenMatch( str ) ) return this.openNest( str, brackets );
-				
-				//otherwise, it is an unmatched Close bracket
-				
-				//if we reject unexpected close, then run the error handle
-				if( this.Nest.Brackets.rejectUnexpectedClose ) this.errorHandle(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
-				this.addString( str )
-			}
+				Extraction.prototype.handleString = function( str ){
+					var brackets;
+					
+					//if the string is a close match, then close
+					if( this.Nest.ContentManager.isCloseMatch( str ) ) return this.closeNest( str );
+					
+					//if the string is an open match, then open
+					if( brackets = this.Nest.ContentManager.getOpenMatch( str ) ) return this.openNest( str, brackets );
+					
+					//otherwise, it is an unmatched Close bracket
+					
+					//if we reject unexpected close, then run the error handle
+					if( this.Nest.Brackets.rejectUnexpectedClose ) this.reject(new Error('No open bracket found for \'' + str + '\' at index ' + this.index + ' (row ' + this.row + ', col ' + this.col + ')' ));
+					this.addString( str )
+				}
 
-			Extraction.prototype.openNest = function( str, brackets ){
-				this.Nest = this.Nest.addChildNest( str, brackets, this );
-			}
+				Extraction.prototype.openNest = function( str, brackets ){
+					this.Nest = this.Nest.addChildNest( str, brackets, this );
+				}
 
-			//to add text to the current result if there is one
-			Extraction.prototype.addString = function( str ){
-				if( str ) this.Nest.addChildString( str );
-			}
+				//to add text to the current result if there is one
+				Extraction.prototype.addString = function( str ){
+					if( str ) this.Nest.addChildString( str );
+				}
+				
+				Extraction.prototype.closeNest = function( str ){
+					this.Nest = this.Nest.close( str );
+				}
+				
+				return Extraction;
+			})();
 			
-			Extraction.prototype.closeNest = function( str ){
-				this.Nest = this.Nest.close( str );
-			}
-			
-			return Extraction;
-		})();
-		
 		function stripHandle(){
 			return '';
 		};
 		
-		function Parser( brackets, errorHandle ){
+		function Parser( brackets, rejectOrAsync ){
 			
-			var errorHandle = typeof errorHandle === "function" ? errorHandle : Settings.errorHandle;
-			
+			var isAsync = typeof rejectOrAsync === "boolean" ? rejectOrAsync : Settings.async,
+				reject = typeof rejectOrAsync === "function" ? rejectOrAsync : Settings.reject;
+	
 			if( !(brackets instanceof Brackets) ){
-				errorHandle(new Error('The Parser input must be a Brackets Object'));
-				return null;
+				reject(new Error('The Parser input must be a Brackets Object'));
+				return new EmptyParser;
+			}
+			//to run the given function in sync or async
+			function run( fn, args, defaultReturn ){
+				var result,
+					resolveHandle = function( val ){
+						result = val;
+					}
+					hasError = false,
+					rejectHandle = function( err ){
+						reject( err );
+						hasError = true;
+					};
+			
+				function run( resolve, reject  ){
+					fn.apply( this, [resolve, reject].concat(args) );
+				}
+			
+				if( isAsync ) return new Promise(function( resolve, reject ){
+					run( resolve, reject );
+				})
+				
+				run( resolveHandle, rejectHandle );
+				
+				return hasError ? defaultReturn : result; 
+			}
+						
+			function newX( reject, str ){
+				return new Extraction( reject, str, brackets );
 			}
 			
-			function newX( str ){
-				return new Extraction( errorHandle, brackets, str );
-			}
-			
-			this.extract = function( str, count ){
-				var X = newX( str );
+			function extract( resolve, reject, str, count ){
+				var X = newX( reject, str );
 				
 				if (typeof count !== "number") count = -1;
 				
@@ -575,7 +633,13 @@ var Settings = {
 				//if there is no count, then just handle all strings
 				else X.handleAllStrings();
 				
-				return X.returnIfNoError( X.Nest.public.matches );
+				X.checkUnclosed();
+				
+				resolve( X.Nest.public.matches );
+			}
+			
+			this.extract = function( str, count ){
+				return run( extract, [str, count], [] );
 			}
 			
 			this.handle = function( str ){
@@ -631,6 +695,35 @@ var Settings = {
 		}
 		
 		return remove;
+	})(),
+	defineSettings = (function(){
+
+		function setIf( obj, key, type ){
+			if( typeof obj[key] === type ) Settings[key] = obj[key];
+		}
+		
+		function setRegexListIf( obj, key ){
+			if( key in obj ) Settings[key] = CompileRegexList( obj[key], Settings.regexFirst );
+		}
+
+		function defineSettings( obj ){	
+			if (typeof obj !== 'object') return;
+			
+			setIf( obj, 'regexFirst', 'boolean' );
+			setIf( obj, 'async', 'boolean' );
+			setIf( obj, 'closeFirst', 'boolean' );
+			setIf( obj, 'stripEscapes', 'boolean' );
+			setIf( obj, 'rejectUnexpectedClose', 'boolean' );
+			setIf( obj, 'wordBoundary', 'boolean' );
+			
+			setIf( obj, 'reject', 'function' );
+			setIf( obj, 'handle', 'function' );
+					
+			setRegexListIf( obj, 'wordRegex' );
+			setRegexListIf( obj, 'escape' );
+		};
+		
+		return defineSettings;
 	})(),
 	JS = {
 		RegExp : new Brackets({
@@ -698,23 +791,6 @@ function isRegExp( val ){
 function buildFullRegex( source ){
 	return source ? new RegExp( '^(?:' +  source + ')$' ) : null;
 }
-
-//to define the settings
-function defineSettings( obj ){	
-	if (typeof obj !== 'object') return;
-	
-	if( typeof obj.regexFirst === 'boolean' ) Settings.regexFirst = obj.regexFirst;
-	if( typeof obj.closeFirst === 'boolean' ) Settings.closeFirst = obj.closeFirst;
-	if( typeof obj.stripEscapes === 'boolean' ) Settings.stripEscapes = obj.stripEscapes;
-	if( typeof obj.rejectUnexpectedClose === 'boolean' ) Settings.rejectUnexpectedClose = obj.rejectUnexpectedClose;
-	if( typeof obj.wordBoundary === 'boolean' ) Settings.wordBoundary = obj.wordBoundary;
-	
-	if( typeof obj.errorHandle === 'function' ) Settings.errorHandle = obj.errorHandle;
-	if( typeof obj.handle === 'function' ) Settings.handle = obj.handle;
-	
-	if( 'wordRegex' in obj ) Settings.wordRegex = CompileRegexList( obj.wordRegex, Settings.regexFirst );
-	if( 'escape' in obj ) Settings.escape = CompileRegexList( obj.escape, Settings.regexFirst );
-};
 
 module.exports = {
 	Parser : Parser,
