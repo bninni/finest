@@ -7,7 +7,9 @@ Todo:
 			-pen will match before penny
 		-make note that if a segment matches multiple open brackets, the first one listed will be used
 			-this is because the 'escapeRegex' is specific to a bracket
-
+		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
+			-but if the close string is part of an open string, it will match the open string first
+			
 	Finish WordBoundary:
 		-need one for the open/close of the content brackets and one for the close bracket of the current nest
 		-should succeed if the boundary is another open/close bracket?
@@ -22,7 +24,9 @@ Todo:
 var Settings = {
 		wordBoundary : false,
 		rejectUnexpectedClose : true,
+		stripEscapes : false,
 		regexFirst : false,
+		closeFirst : true,
 		escape : '',
 		wordRegex : '\\w',
 		errorHandle : function( err ){
@@ -182,13 +186,16 @@ var Settings = {
 		function Brackets( obj ){
 			var data = typeof obj === "object" ? obj : {},
 				regexFirst = typeof data.regexFirst === 'boolean' ? data.regexFirst : Settings.regexFirst,
+				closeFirst = typeof data.closeFirst === 'boolean' ? data.closeFirst : Settings.closeFirst,
 				escapeSource = CompileRegexList( data.escape, regexFirst ),
 				openSources = [],
 				closeSources = [],
-				contentList = [];
+				contentList = [],
+				bracketList = [];
 			
 			//to add a Brackets to the bracketList
 			function addBracket( obj ){
+				bracketList.push( obj );
 				openSources.push( obj.Open.source );
 				closeSources.push( obj.Close.source );
 			}
@@ -218,13 +225,15 @@ var Settings = {
 			
 			this.EscapeManager = new EscapeManager( escapeSource );
 			this.rejectUnexpectedClose = typeof data.rejectUnexpectedClose === 'boolean' ? data.rejectUnexpectedClose : Settings.rejectUnexpectedClose,
+			this.stripEscapes = typeof data.stripEscapes === 'boolean' ? data.stripEscapes : Settings.stripEscapes,
 			this.Handle = typeof data.handle === "function" ? data.handle : Settings.handle;
 			this.WordBoundaryManager = new WordBoundaryManager( data.wordBoundary, CompileRegexList( data.wordRegex, regexFirst ) ),
 			this.addContent = addContent;
 			this.Open = new RegexMatcher( openSources.join('|') );
 			this.Close = new RegexMatcher( closeSources.join('|') );
-			this.getContentManager = function(){
-				return new ContentManager( contentList, this.Close );
+			this.getContentManager = function( str ){
+				var closeManager = str ? findOpenMatch( str, bracketList ).Close : null;
+				return new ContentManager( contentList, closeManager, closeFirst );
 			}
 			//to see if the given str is valid
 			//is valid if the prev str does not end with escape AND
@@ -232,15 +241,15 @@ var Settings = {
 			this.isValid = function( prevStr, str, nextStr ){
 				return !this.EscapeManager.isMatch( prevStr ) && this.WordBoundaryManager.isValid( prevStr, str, nextStr );
 			}
-			
-			this.contentList = contentList;
 		}
 		
-		function ContentManager( contentList, closeManager ){
+		function ContentManager( contentList, closeManager, closeFirst ){
 				
-				var openSources = [],
+				var regexSource, contentSource,
+					openSources = [],
 					closeSources = [],
-					regexSource = closeManager.source,
+					regexSource = closeManager ? closeManager.source : '',
+					contentSource = '',
 					openRegex = null,
 					nextRegex = null;
 				
@@ -250,16 +259,16 @@ var Settings = {
 				})
 				
 				if( contentList.length ){
-					regexSource += '|' + openSources.join('|') + '|' + closeSources.join('|');
+					contentSource = openSources.join('|') + '|' + closeSources.join('|');
+					regexSource = closeFirst ? ( (regexSource ? regexSource+'|' : '') + contentSource ) : ( contentSource + (regexSource ? '|'+regexSource : '') )
 					openRegex = new RegExp('^(' + openSources.join('|') + ')$' );
 				}
 				
 				if( regexSource ) nextRegex = new RegExp('^([\\w\\W]*?)(' + regexSource + ')([\\w\\W]*)$');
 				
 				this.isCloseMatch = function( str ){
-					return closeManager.isMatch( str );
+					return closeManager && closeManager.isMatch( str ) ;
 				}
-				this.nextRegex = nextRegex;
 				
 				this.getNextString = function( str ){
 					return str.match( nextRegex );
@@ -314,17 +323,12 @@ var Settings = {
 				
 				//set some properties from the input
 				this.Brackets = brackets;
-				this.ContentManager = brackets.getContentManager();
+				this.ContentManager = brackets.getContentManager( str );
 				this.startIndex = extraction.index;
 				this.startRow = extraction.row;
 				this.startCol = extraction.col;				
 				this.handle = (extraction.nestHandle ? extraction.nestHandle : brackets.Handle).bind(this.public);
 				this.parent = parent;
-				
-				//override the isCloseMatch function if this is the Base Nest
-				if( !parent ) this.ContentManager.isCloseMatch = function( str ){
-					return false;
-				};
 				
 				//initialize other properties
 				this.doInclude = true;
@@ -337,8 +341,8 @@ var Settings = {
 					
 				if( str ){
 					this.addRawString( str );
-					//remove all escapes
-					str = this.Brackets.EscapeManager.strip( str );
+					//remove all escapes if requested to do so
+					if( this.Brackets.stripEscapes ) str = this.Brackets.EscapeManager.strip( str );
 					this.addOriginalString( str );
 					this.addHandledString( str );
 					nest.nest.push( str );
@@ -440,7 +444,7 @@ var Settings = {
 				this.col = 0;
 				this.index = 0;
 				this.WordBoundaryManager = brackets.wordBoundaryManager;
-				this.Nest = new Nest( brackets, this );	
+				this.Nest = new Nest( brackets, this );
 			}
 			
 			//to return the given value if there is no error
@@ -478,7 +482,6 @@ var Settings = {
 			}
 			
 			Extraction.prototype.getNextString = function(){
-				
 				var match = this.Nest.ContentManager.getNextString( this.remainingString );
 				
 				//if there is no match, then it is finished
@@ -488,6 +491,8 @@ var Settings = {
 				}
 				//add the non-important string
 				this.addString( match[1] );
+				this.increaseCounters( match[1] );
+				
 				//update the remaining string
 				this.remainingString = match[3];
 				//return the important string
@@ -699,6 +704,8 @@ function defineSettings( obj ){
 	if (typeof obj !== 'object') return;
 	
 	if( typeof obj.regexFirst === 'boolean' ) Settings.regexFirst = obj.regexFirst;
+	if( typeof obj.closeFirst === 'boolean' ) Settings.closeFirst = obj.closeFirst;
+	if( typeof obj.stripEscapes === 'boolean' ) Settings.stripEscapes = obj.stripEscapes;
 	if( typeof obj.rejectUnexpectedClose === 'boolean' ) Settings.rejectUnexpectedClose = obj.rejectUnexpectedClose;
 	if( typeof obj.wordBoundary === 'boolean' ) Settings.wordBoundary = obj.wordBoundary;
 	
