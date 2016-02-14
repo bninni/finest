@@ -10,6 +10,8 @@ Todo:
 		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
 			-but if the close string is part of an open string, it will match the open string first
 			
+	Should BaseNest have a handle?
+			
 	For all parser function, cast as string first
 		-same for empty parser
 		
@@ -38,8 +40,8 @@ var Settings = {
 		reject : function( err ){
 			throw err;
 		},
-		handle : function(){
-			return this.open + this.content + this.close;
+		handle : function( resolve, reject ){
+			resolve( this.open + this.content + this.close );
 		}
 	},
 	WordBoundaryManager = (function(){
@@ -291,12 +293,6 @@ var Settings = {
 		return Brackets;
 	})(),
 	Nest = (function(){
-	
-		function asyncHandle( fn, resolve ){
-			var result = fn.apply( this, resolve );
-			if( result !== undefined ) resolve( result );
-		}
-	
 		var Nest = (function(){
 			function Nest( str ){
 				this.nest = [];
@@ -331,7 +327,17 @@ var Settings = {
 		
 		var NestWrapper = (function(){
 			function NestWrapper( brackets, extraction, str, parent ){
+				
+				var self = this;
+				
 				this.public = new Nest( str );
+				
+				this.handleArray = [];
+				
+				this.promise = new Promise(function( resolve,reject ){
+					self.resolve = resolve;
+					self.reject = reject;
+				});
 				
 				//return an empty nest if there are no input arguments
 				if( !brackets ) return this.public;
@@ -339,11 +345,38 @@ var Settings = {
 				//set some properties from the input
 				this.Brackets = brackets;
 				this.ContentManager = brackets.getContentManager( str );
+				this.isAsync = extraction.isAsync;
 				this.startIndex = extraction.index;
 				this.startRow = extraction.row;
-				this.startCol = extraction.col;				
-				this.handle = (extraction.nestHandle ? extraction.nestHandle : brackets.Handle).bind(this.public);
+				this.startCol = extraction.col;
+				this.reject = extraction.reject;
+				
 				this.parent = parent;
+				
+				this.handle = function(){
+					var resolvedValue, result,
+						resolveHandle = function( str ){
+							resolvedValue = str;
+						},
+						fn = extraction.nestHandle ? extraction.nestHandle : brackets.Handle;
+						
+					if( this.isAsync ){
+						return new Promise(function(resolve,reject){
+							Promise.all( self.handleArray ).then(function( arr ){
+								self.public.content = self.handleArray.join('');
+								result = fn.call( self.public, resolve, reject );
+								if( result !== undefined ) resolve( result );
+							});
+						});
+					}
+					
+					this.public.content = this.handleArray.join('');
+					result = fn.call( self.public, resolveHandle, self.reject );
+					
+					//if there was no return value, use the resolvedValue
+					if( result === undefined ) return resolvedValue;
+					return result;
+				};
 				
 				//initialize other properties
 				this.doInclude = true;
@@ -359,7 +392,10 @@ var Settings = {
 					//remove all escapes if requested to do so
 					if( this.Brackets.stripEscapes ) str = this.Brackets.EscapeManager.strip( str );
 					this.addOriginalString( str );
-					this.addHandledString( str );
+					
+					if( this.isAsync ) this.handleArray.push( Promise.resolve( str ) );
+					else this.handleArray.push( str );
+					
 					nest.nest.push( str );
 					nest.simple.push( str );
 				}
@@ -371,7 +407,7 @@ var Settings = {
 				var child = new NestWrapper( brackets, extraction, str, this ),
 					childNest = child.public,
 					nest = this.public;
-				
+								
 				this.storeCurrentStringSegment();
 				
 				nest.matches.push( childNest );
@@ -394,10 +430,6 @@ var Settings = {
 			
 			NestWrapper.prototype.addRawString = function( str ){
 				this.public.raw += str;
-			};
-			
-			NestWrapper.prototype.addHandledString = function( str ){
-				this.public.content += str;
 			};
 			
 			NestWrapper.prototype.addToChildNest = function( child, isParent ){
@@ -437,7 +469,7 @@ var Settings = {
 				//add the content to the parent content
 				this.parent.addRawString( fullString );
 				this.parent.addOriginalString( nest.open + nest.original + str );
-				this.parent.addHandledString( this.handle() );
+				this.parent.handleArray.push( this.handle() );
 				
 				return this.parent;
 			};
@@ -474,7 +506,8 @@ var Settings = {
 			Extraction = (function(){
 				var lineBreakRegex = /\r\n?|\n/g;
 				
-				function Extraction( reject, str, brackets ){
+				function Extraction( isAsync, reject, str, brackets ){
+					this.isAsync = isAsync;
 					this.reject = reject;
 					this.remainingString = str;
 					this.row = 0;
@@ -616,7 +649,7 @@ var Settings = {
 			}
 						
 			function newX( reject, str ){
-				return new Extraction( reject, str, brackets );
+				return new Extraction( isAsync, reject, str, brackets );
 			}
 			
 			function extract( resolve, reject, str, count ){
@@ -634,8 +667,11 @@ var Settings = {
 				else X.handleAllStrings();
 				
 				X.checkUnclosed();
-				
-				resolve( X.Nest.public.matches );
+				//once every promise is complete, then add to the content and handle it
+				if( isAsync ) Promise.all( X.Nest.handleArray ).then(function(){
+					resolve( X.Nest.public.matches );
+				},this.reject);
+				else resolve( X.Nest.public.matches );
 			}
 			
 			this.extract = function( str, count ){
