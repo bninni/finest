@@ -10,13 +10,16 @@ Todo:
 		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
 			-but if the close string is part of an open string, it will match the open string first
 			
+	Test using return vs using resolve() in handles
+	
 	Should BaseNest have a handle?
-			
+		-Yes, and close the base nest before returning
+		
+	Make all Parser functions exist outside of the constructor function
+		
 	For all parser function, cast as string first
 		-same for empty parser
 		
-	Can run async, handle functions have resolve, reject inputs
-			
 	Finish WordBoundary:
 		-need one for the open/close of the content brackets and one for the close bracket of the current nest
 		-should succeed if the boundary is another open/close bracket?
@@ -327,23 +330,17 @@ var Settings = {
 		
 		var NestWrapper = (function(){
 			function NestWrapper( brackets, extraction, str, parent ){
-				
-				var self = this;
-				
+								
 				this.public = new Nest( str );
 				
 				this.handleArray = [];
-				
-				this.promise = new Promise(function( resolve,reject ){
-					self.resolve = resolve;
-					self.reject = reject;
-				});
 				
 				//return an empty nest if there are no input arguments
 				if( !brackets ) return this.public;
 				
 				//set some properties from the input
 				this.Brackets = brackets;
+				this.Extraction = extraction;
 				this.ContentManager = brackets.getContentManager( str );
 				this.isAsync = extraction.isAsync;
 				this.startIndex = extraction.index;
@@ -353,35 +350,37 @@ var Settings = {
 				
 				this.parent = parent;
 				
-				this.handle = function(){
-					var resolvedValue, result,
-						resolveHandle = function( str ){
-							resolvedValue = str;
-						},
-						fn = extraction.nestHandle ? extraction.nestHandle : brackets.Handle;
-						
-					if( this.isAsync ){
-						return new Promise(function(resolve,reject){
-							Promise.all( self.handleArray ).then(function( arr ){
-								self.public.content = self.handleArray.join('');
-								result = fn.call( self.public, resolve, reject );
-								if( result !== undefined ) resolve( result );
-							});
-						});
-					}
-					
-					this.public.content = this.handleArray.join('');
-					result = fn.call( self.public, resolveHandle, self.reject );
-					
-					//if there was no return value, use the resolvedValue
-					if( result === undefined ) return resolvedValue;
-					return result;
-				};
+				this.handleFn = (extraction.nestHandle ? extraction.nestHandle : brackets.Handle).bind( this.public );
 				
 				//initialize other properties
 				this.doInclude = true;
 				this.currentStringSegment = '';
 			}
+			
+			NestWrapper.prototype.handle = function(){
+				var resolvedValue, result,
+					resolveHandle = function( str ){
+						resolvedValue = str;
+					},
+					self = this;
+					
+				if( this.isAsync ){
+					return new Promise(function(resolve,reject){
+						Promise.all( self.handleArray ).then(function( arr ){
+							self.public.content = arr.join('');
+							result = self.handleFn( resolve, reject );
+							if( result !== undefined ) resolve( result );
+						});
+					});
+				}
+				
+				this.public.content = this.handleArray.join('');
+				result = this.handleFn( resolveHandle, self.reject );
+				
+				//if there was no return value, use the resolvedValue
+				if( result === undefined ) return resolvedValue;
+				return result;
+			};
 			
 			NestWrapper.prototype.storeCurrentStringSegment = function(){
 				var str = this.currentStringSegment,
@@ -403,8 +402,8 @@ var Settings = {
 				this.currentStringSegment = '';
 			};
 			
-			NestWrapper.prototype.addChildNest = function( str, brackets, extraction ){
-				var child = new NestWrapper( brackets, extraction, str, this ),
+			NestWrapper.prototype.addChildNest = function( str, brackets ){
+				var child = new NestWrapper( brackets, this.Extraction, str, this ),
 					childNest = child.public,
 					nest = this.public;
 								
@@ -524,7 +523,7 @@ var Settings = {
 				}
 				
 				Extraction.prototype.handleAllStringsUntil = function( condition ){
-					while( !condition() && this.remainingString ) this.handleNextString();
+					while( !this.condition() && this.remainingString ) this.handleNextString();
 					this.Nest.storeCurrentStringSegment();
 				}
 				
@@ -595,7 +594,7 @@ var Settings = {
 				}
 
 				Extraction.prototype.openNest = function( str, brackets ){
-					this.Nest = this.Nest.addChildNest( str, brackets, this );
+					this.Nest = this.Nest.addChildNest( str, brackets );
 				}
 
 				//to add text to the current result if there is one
@@ -614,6 +613,58 @@ var Settings = {
 			return '';
 		};
 		
+		//to run the given function in sync or async
+		function run( fn, isAsync, reject, brackets, str, args, defaultReturn, returnHandle ){
+			var result,
+				resolveHandle = function( val ){
+					result = val;
+				},
+				hasError = false,
+				rejectHandle = function( err ){
+					reject( err );
+					hasError = true;
+				};
+		
+			function run( resolve, reject  ){
+				var X = new Extraction( isAsync, reject, str, brackets );
+				
+				fn.apply( X, args );
+				
+				X.checkUnclosed();
+				//once every promise is complete, then add to the content and handle it
+				if( isAsync ) Promise.all( X.Nest.handleArray ).then(function(){
+					resolve( returnHandle(X.Nest.public) );
+				},reject);
+				else resolve( returnHandle(X.Nest.public) );
+			}
+		
+			if( isAsync ) return new Promise( run )
+			
+			run( resolveHandle, rejectHandle );
+			
+			return hasError ? defaultReturn : result; 
+		}
+			
+		function extract( count ){
+			if (typeof count !== "number") count = -1;
+			
+			this.Nest.doInclude = false;
+			
+			//if there is a count, then stop when the number of matches is reached
+			if( count > -1 ){
+				this.condition = function(){
+					return (!this.Nest.parent && this.Nest.public.matches.length === count);
+				};
+				this.handleAllStringsUntil();
+			}
+			//if there is no count, then just handle all strings
+			else this.handleAllStrings();
+		};
+		
+		function extractReturn(nest){
+			return nest.matches;
+		};
+		
 		function Parser( brackets, rejectOrAsync ){
 			
 			var isAsync = typeof rejectOrAsync === "boolean" ? rejectOrAsync : Settings.async,
@@ -623,59 +674,9 @@ var Settings = {
 				reject(new Error('The Parser input must be a Brackets Object'));
 				return new EmptyParser;
 			}
-			//to run the given function in sync or async
-			function run( fn, args, defaultReturn ){
-				var result,
-					resolveHandle = function( val ){
-						result = val;
-					}
-					hasError = false,
-					rejectHandle = function( err ){
-						reject( err );
-						hasError = true;
-					};
-			
-				function run( resolve, reject  ){
-					fn.apply( this, [resolve, reject].concat(args) );
-				}
-			
-				if( isAsync ) return new Promise(function( resolve, reject ){
-					run( resolve, reject );
-				})
-				
-				run( resolveHandle, rejectHandle );
-				
-				return hasError ? defaultReturn : result; 
-			}
-						
-			function newX( reject, str ){
-				return new Extraction( isAsync, reject, str, brackets );
-			}
-			
-			function extract( resolve, reject, str, count ){
-				var X = newX( reject, str );
-				
-				if (typeof count !== "number") count = -1;
-				
-				X.Nest.doInclude = false;
-				
-				//if there is a count, then stop when the number of matches is reached
-				if( count > -1 ) X.handleAllStringsUntil(function(){
-					return (!X.Nest.parent && X.Nest.matches.length === count);
-				});
-				//if there is no count, then just handle all strings
-				else X.handleAllStrings();
-				
-				X.checkUnclosed();
-				//once every promise is complete, then add to the content and handle it
-				if( isAsync ) Promise.all( X.Nest.handleArray ).then(function(){
-					resolve( X.Nest.public.matches );
-				},this.reject);
-				else resolve( X.Nest.public.matches );
-			}
 			
 			this.extract = function( str, count ){
-				return run( extract, [str, count], [] );
+				return run( extract, isAsync, reject, brackets, str, [count], [], extractReturn );
 			}
 			
 			this.handle = function( str ){
