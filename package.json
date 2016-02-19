@@ -31,5 +31,8 @@
   "bugs": {
     "url": "https://github.com/bninni/finest/issues"
   },
-  "homepage": "https://github.com/bninni/finest#readme"
+  "homepage": "https://github.com/bninni/finest#readme",
+  "dependencies": {
+    "basic-functions": "^1.0.2"
+  }
 }
