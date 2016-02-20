@@ -9,19 +9,21 @@ Todo:
 			-this is because the 'escapeRegex' is specific to a bracket
 		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
 			-but if the close string is part of an open string, it will match the open string first
-			
-	Current String Segment should be Current Token
-			
-	Should .isToken become .isString??
-			
-	Need a function to simply use the value from the object or object from the settings based on the type
+						
+	Should we remove escapes from Tokens??
+		-they wouldn't match correctly if the escapes were there though..
+						
+	Need a simple function to use either the given value or the Settings value
 		
 	Finish Tokens:
 		Add Public Class
 			-with match, label, handle
 		Can be added to a Brackets Content
 		Add Tokens to the ContentManager.getNextString regex
-			-Way to add a Token directly instead of to the content string
+			-need Extraction.prototype.addToken
+			-.currentStringSegment should be currentToken
+				-.addChildString will just updated the raw value in this.currentToken
+				-.storeCurrentStringSegment will just run this.addToken( this.currentToken ) and then create a new Token in its place
 		
 	Finish WordBoundary:
 		-need one for the open/close of the content brackets and one for the close bracket of the current nest
@@ -36,10 +38,15 @@ Todo:
 		
 	-----------------------------------------------	
 	
+	How should it handle conflicting tokens?
+		-i.e., pen is matched but openIf returns false
+			-should it see if it matches any remaining tokens/brackets?
+	
 	Should eofClose always or never apply to the Base Nest??
 
 	Should each Mate to have their own Label?
 		-or at least allow 'label' to be a Function which returns a string
+		-if function, apply the results of .match (of the original regex with capture groups) as the input args
 	
 	Can Override all Bracket settings in the Parser??
 		-only the booleans
@@ -57,21 +64,19 @@ Todo:
 	
 	Test using regex input for compileRegexList
 	-----------------------------------------------	
-		
-	All contentStrings should be TokenObjects
-		-values are combined to create the .content/.value string
-		-But in the NestArray, they are tokens
-		
+				
 	-For Each should also apply to Tokens??
 		-or, one Nest function, one Tokens function
+		-can run async
 			
 	If openIf and closeIf fail, then keep checking
 		-this way, we can have multiple CurlyBraces for different contexts
 			-i.e. if this.before = FunctionDeclaration, then use FunctionBody will pass
 			
-	-Retain the capture groups in open/close and send them to the Nest??
+	-Retain the capture groups in open/close and store them in the Nest??
 		-will need 2 regex, one for 'getNextTag' and one for capturing
 		-openCaptures, closeCaptures
+	
 */
 
 var baseFns = require('basic-functions'),
@@ -90,23 +95,74 @@ var baseFns = require('basic-functions'),
 		reject : baseFns.throw,
 		openIf : baseFns.true,
 		closeIf : baseFns.true,
-		handle : function( resolve, reject ){
+		tokenHandle : function( resolve, reject ){
+			resolve( this.original );
+		},
+		nestHandle : function( resolve, reject ){
 			resolve( this.open + this.content + this.close );
 		}
 	},
 	Token = (function(){
-		function Token( raw, orig, parent, label ){
+		function Token( parent, raw, label ){
 			this.parent = parent;
 			this.raw = raw;
-			this.original = orig;
-			this.content = orig;
+			this.original = '';
+			this.content = '';
 
 			this.isNest = false;
-			this.isToken = true;
+			this.isString = true;
 			this.type = label || '';
 		}
 		
-		return Token;
+		function TokenWrapper( parent, str, label, handle ){
+			this.parent = parent;
+			this.public = new Token( parent.public, str || '', label );
+			this.handleFn = (typeof handle === 'function' ? handle : Settings.tokenHandle).bind( this.public );
+		}
+		
+		TokenWrapper.prototype.addChildString = function( str ){
+			this.public.raw += str;
+		}
+		
+		TokenWrapper.prototype.addOriginalString = function( str ){
+			this.public.original = str;
+		}
+		
+		TokenWrapper.prototype.handle = function(){
+			var resolvedValue, result,
+				resolveHandle = function( str ){
+					resolvedValue = str;
+				},
+				self = this;
+				
+			//if this is async, then return a promise which only gets resolves when all promises in the content array get resolved
+			if( this.parent.Extraction.isAsync ){
+				return new Promise(function( resolve, reject ){
+					var result;
+					
+					function resolveHandle( str ){
+						self.public.content = str;
+						resolve( str );
+					}
+				
+					//run the handle function
+					result = self.handleFn( resolveHandle, reject );
+					
+					//if the handle function returned a value, then resolve using that value
+					if( result !== undefined ) resolveHandle( result );
+				});
+			}
+			
+			//run the handle function using the custom resolve handle and the extraction reject function
+			result = this.handleFn( resolveHandle, this.parent.Extraction.reject );
+			
+			//if there was no return value, use the resolvedValue
+			this.public.content = (result === undefined ? resolvedValue : result);
+			
+			return this.public.content;
+		}
+		
+		return TokenWrapper;
 	})(),
 	WordBoundaryManager = (function(){
 		function WordBoundaryManager( useWordBoundary, source ){
@@ -196,7 +252,7 @@ var baseFns = require('basic-functions'),
 		//The empty Escape Manager, returned when no Escape Source String is given
 		var emptyEscapeManager = {
 			isMatch : baseFns.false,
-			strip : baseFns.echo
+			stripFrom : baseFns.echo
 		};
 		
 		//To create an Escape Manager from the given Escape Tag source
@@ -227,7 +283,7 @@ var baseFns = require('basic-functions'),
 					//If the amount is odd, then it ends with an Escape Tag
 					return (match.length-1)%2;
 				},
-				strip : function( str ){
+				stripFrom : function( str ){
 					//capture each Escape Tag and the subsequent character, and only return the character
 					return str.replace( stripRegex, '$1' );
 				}
@@ -382,7 +438,7 @@ var baseFns = require('basic-functions'),
 			this.removeUnmatchedTokens = typeof data.removeUnmatchedTokens === 'boolean' ? data.removeUnmatchedTokens : Settings.removeUnmatchedTokens;
 			this.stripEscapes = typeof data.stripEscapes === 'boolean' ? data.stripEscapes : Settings.stripEscapes;
 			this.eofClose = typeof data.eofClose === 'boolean' ? data.eofClose : Settings.eofClose;
-			this.handle = typeof data.handle === "function" ? data.handle : Settings.handle;
+			this.handle = typeof data.handle === "function" ? data.handle : Settings.nestHandle;
 			this.openIf = typeof data.openIf === "function" ? data.openIf : Settings.openIf;
 			this.closeIf = typeof data.closeIf === "function" ? data.closeIf : Settings.closeIf;
 			this.WordBoundaryManager = new WordBoundaryManager( data.wordBoundary, compileRegexList( data.wordRegex, regexFirst ) );
@@ -561,7 +617,7 @@ var baseFns = require('basic-functions'),
 					this.ancestors = [];
 					this.depth = 0;
 					this.isNest = true;
-					this.isToken = false;
+					this.isString = false;
 					this.type = label || '';
 				}
 				
@@ -618,7 +674,7 @@ var baseFns = require('basic-functions'),
 					
 					//initialize other properties
 					this.doInclude = true;
-					this.currentStringSegment = '';
+					this.currentToken = new Token( this );
 				}
 				
 				/*
@@ -665,33 +721,37 @@ var baseFns = require('basic-functions'),
 					- adds the string to the original string, content array, nest array and simple array
 						- if async, will add a resolved promise to the content array instead
 				*/
-				NestWrapper.prototype.storeCurrentStringSegment = function(){
-					var raw = this.currentStringSegment,
-						orig = raw;
+				NestWrapper.prototype.storeCurrentToken = function(){						
+					//if there is no token string
+					//or, we remove unmatched tokens, then return
+					if( !this.currentToken.public.raw || this.Brackets.removeUnmatchedTokens ) return;
 						
-					//if we don't remove unmatched tokens, then add the string
-					if( raw && !this.Brackets.removeUnmatchedTokens ){
-						
-						//append the string to the raw string
-						this.addRawString( raw );
-						
-						//remove all escapes if requested to do so
-						if( this.Brackets.stripEscapes ) orig = this.Brackets.EscapeManager.strip( raw );
-												
-						//add the unescaped string to the original string
-						this.addOriginalString( orig );
-						
-						//add an unmatched token to the token array
-						this.public.tokens.push( new Token( raw, orig, this.public ) );
-						
-						//add the unescaped string to the contentArray (as string or resolved promise)
-						if( this.Extraction.isAsync ) this.contentArray.push( Promise.resolve( orig ) );
-						else this.contentArray.push( orig );
-					}
+					this.storeToken( this.currentToken );
 					
-					//reset the string segment
-					this.currentStringSegment = '';
+					//create a new token
+					this.currentToken = new Token( this );
 				};
+				
+				NestWrapper.prototype.storeToken = function( token ){
+					
+					var str = token.public.raw;
+					
+					//append the string to the raw string
+					this.addRawString( str );
+					
+					//remove all escapes if requested to do so
+					if( this.Brackets.stripEscapes ) str = this.Brackets.EscapeManager.stripFrom( str );
+											
+					//add the unescaped string to the original string
+					token.addOriginalString( str );
+					this.addOriginalString( str );
+											
+					//add the token to the token array
+					this.public.tokens.push( token.public );
+					
+					//add the handled token to the contentArray (as string or resolved promise)
+					this.contentArray.push( token.handle() );
+				}
 				
 				/*
 				To add a child nest to this Nest
@@ -706,7 +766,7 @@ var baseFns = require('basic-functions'),
 						childNest = child.public,
 						nest = this.public;
 						
-					this.storeCurrentStringSegment();
+					this.storeCurrentToken();
 					
 					nest.matches.push( childNest );
 					nest.tokens.push( childNest );
@@ -754,8 +814,8 @@ var baseFns = require('basic-functions'),
 					var nest = this.public,
 						fullString, length;
 						
-					//store the latest string segment
-					this.storeCurrentStringSegment();
+					//store the latest token
+					this.storeCurrentToken();
 					
 					//if there is no parent, then just return the handle
 					if( !this.parent ) return this.handle();
@@ -786,11 +846,11 @@ var baseFns = require('basic-functions'),
 					- there is a no word boundary error
 				*/
 				NestWrapper.prototype.isValid = function( str, nextStr ){
-					return this.Brackets.isValid( this.currentStringSegment, str, nextStr );
+					return this.Brackets.isValid( this.currentToken.public.raw, str, nextStr );
 				};
 				
 				NestWrapper.prototype.addChildString = function( str ){			
-					this.currentStringSegment += str;
+					this.currentToken.raw += str;
 				};
 				
 				NestWrapper.prototype.addOriginalString = function( str ){
@@ -929,20 +989,20 @@ var baseFns = require('basic-functions'),
 				var brackets = this.Nest.ContentManager.getOpenMatch( tag );
 				
 				//if the brackets openIf function returned false, then add as string instead.
-				if( !brackets.openIf.call( this.Nest.public, this.Nest.currentStringSegment, tag ) ) return this.addString( tag );
+				if( !brackets.openIf.call( this.Nest.public, this.Nest.currentToken.public.raw, tag ) ) return this.addString( tag );
 				
 				this.Nest = this.Nest.addChildNest( tag, brackets );
 			}
 
 			//to add the given string to the current result if it exists
 			Extraction.prototype.addString = function( str ){
-				if( str ) this.Nest.addChildString( str );
+				if( str ) this.Nest.currentToken.addChildString( str );
 			}
 			
 			//to close the current nest
 			Extraction.prototype.closeNest = function( tag ){
 				//if the current brackets closeIf function returned false, then add as string instead
-				if( !this.Nest.Brackets.closeIf.call( this.Nest.public, this.Nest.currentStringSegment, tag ) ) return this.addString( tag );
+				if( !this.Nest.Brackets.closeIf.call( this.Nest.public, this.Nest.currentToken.public.raw, tag ) ) return this.addString( tag );
 				
 				this.Nest = this.Nest.close( tag );
 			}
@@ -1167,7 +1227,8 @@ var baseFns = require('basic-functions'),
 			setIf( obj, 'reject', 'function' );
 			setIf( obj, 'openIf', 'function' );
 			setIf( obj, 'closeIf', 'function' );
-			setIf( obj, 'handle', 'function' );
+			setIf( obj, 'tokenHandle', 'function' );
+			setIf( obj, 'nestHandle', 'function' );
 			
 			setIfInstance( obj, 'autoOpen', Brackets );
 					
