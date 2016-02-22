@@ -10,6 +10,11 @@ Todo:
 		-close first is only check searching for next string.  if open string and close string are identical, it will always close first.
 			-but if the close string is part of an open string, it will match the open string first
 						
+	Brackets should have their own token handles
+	
+	Base nest should NOT handle?
+		-make it an option?
+						
 	Should we remove escapes from Tokens??
 		-they wouldn't match correctly if the escapes were there though..
 						
@@ -95,7 +100,7 @@ var baseFns = require('basic-functions'),
 		reject : baseFns.throw,
 		openIf : baseFns.true,
 		closeIf : baseFns.true,
-		tokenHandle : function( resolve, reject ){
+		stringHandle : function( resolve, reject ){
 			resolve( this.original );
 		},
 		nestHandle : function( resolve, reject ){
@@ -114,10 +119,10 @@ var baseFns = require('basic-functions'),
 			this.type = label || '';
 		}
 		
-		function TokenWrapper( parent, str, label, handle ){
+		function TokenWrapper( parent, handle, str, label ){
 			this.parent = parent;
 			this.public = new Token( parent.public, str || '', label );
-			this.handleFn = (typeof handle === 'function' ? handle : Settings.tokenHandle).bind( this.public );
+			this.handleFn = handle.bind( this.public );
 		}
 		
 		TokenWrapper.prototype.addChildString = function( str ){
@@ -439,6 +444,7 @@ var baseFns = require('basic-functions'),
 			this.stripEscapes = typeof data.stripEscapes === 'boolean' ? data.stripEscapes : Settings.stripEscapes;
 			this.eofClose = typeof data.eofClose === 'boolean' ? data.eofClose : Settings.eofClose;
 			this.handle = typeof data.handle === "function" ? data.handle : Settings.nestHandle;
+			this.stringHandle = typeof data.stringHandle === "function" ? data.stringHandle : Settings.stringHandle;
 			this.openIf = typeof data.openIf === "function" ? data.openIf : Settings.openIf;
 			this.closeIf = typeof data.closeIf === "function" ? data.closeIf : Settings.closeIf;
 			this.WordBoundaryManager = new WordBoundaryManager( data.wordBoundary, compileRegexList( data.wordRegex, regexFirst ) );
@@ -674,7 +680,7 @@ var baseFns = require('basic-functions'),
 					
 					//initialize other properties
 					this.doInclude = true;
-					this.currentToken = new Token( this );
+					this.currentToken = new Token( this, brackets.stringHandle );
 				}
 				
 				/*
@@ -729,7 +735,7 @@ var baseFns = require('basic-functions'),
 					this.storeToken( this.currentToken );
 					
 					//create a new token
-					this.currentToken = new Token( this );
+					this.currentToken = new Token( this, this.Brackets.stringHandle );
 				};
 				
 				NestWrapper.prototype.storeToken = function( token ){
@@ -847,10 +853,6 @@ var baseFns = require('basic-functions'),
 				*/
 				NestWrapper.prototype.isValid = function( str, nextStr ){
 					return this.Brackets.isValid( this.currentToken.public.raw, str, nextStr );
-				};
-				
-				NestWrapper.prototype.addChildString = function( str ){			
-					this.currentToken.raw += str;
 				};
 				
 				NestWrapper.prototype.addOriginalString = function( str ){
@@ -1227,7 +1229,7 @@ var baseFns = require('basic-functions'),
 			setIf( obj, 'reject', 'function' );
 			setIf( obj, 'openIf', 'function' );
 			setIf( obj, 'closeIf', 'function' );
-			setIf( obj, 'tokenHandle', 'function' );
+			setIf( obj, 'stringHandle', 'function' );
 			setIf( obj, 'nestHandle', 'function' );
 			
 			setIfInstance( obj, 'autoOpen', Brackets );
